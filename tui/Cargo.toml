@@ -1,0 +1,22 @@
+[package]
+name = "rdo-solo-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Solo Red Dead Online session controller with a live network TUI, run on the homelab gateway"
+
+[[bin]]
+name = "rdo-solo-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+chrono = "0.4"
+# Pure-Rust reader for the GeoLite2 .mmdb (no C deps; keeps the musl build static).
+maxminddb = "0.24"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "z"

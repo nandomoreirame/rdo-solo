@@ -1,0 +1,4 @@
+# Build here (CachyOS), run on the homelab (Ubuntu 26.04). A static musl binary
+# sidesteps any glibc-version mismatch between the two.
+[build]
+target = "x86_64-unknown-linux-musl"
