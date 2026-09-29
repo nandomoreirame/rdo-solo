@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+# rdo-solo - force a solo Red Dead Online session by dropping the game's P2P
+# UDP ports for one console, using this host as the console's IPv4 gateway.
+#
+# This file runs ON THE HOMELAB, not on the workstation. It is deployed by
+# `rdo-solo deploy` from the dotfiles wrapper (workstation/rdo-solo), which is
+# what you actually type. Installed path: /usr/local/bin/rdo-solo
+#
+# SOLO ONLY. It isolates the console: nobody can open P2P with you, so the
+# session empties and stays empty. It does NOT do "friends only" — RDO has no
+# stable private public session, and a whitelist fights the P2P mesh (the host
+# and Rockstar relays live on these ports); see rdo-solo.md (nesta pasta).
+# To play with a posse, turn the filter OFF: missions/series/showdowns already
+# run in a private instance for your posse.
+#
+# Topology this assumes (verified 2026-08-21):
+#   Xbox (static IP, gateway = this host) -> this host (forwards) -> Vivo modem -> internet
+# Return traffic comes back straight from the modem to the console, so no NAT is
+# needed. That also means ICMP redirects MUST stay off, otherwise the kernel tells
+# the console to bypass this host and the filter is silently skipped.
+#
+# Usage: rdo-solo {install|on|off|watch|blocked|status|route-fix|route-unfix
+#                  |nat-on|nat-off|boot|uninstall}
+
+set -eo pipefail
+
+CONF=/etc/rdo-solo.conf
+STATE_DIR=/var/lib/rdo-solo
+STATE_FILE="$STATE_DIR/state"
+UNIT=/etc/systemd/system/rdo-solo.service
+SYSCTL_FILE=/etc/sysctl.d/99-rdo-solo.conf
+SELF=/usr/local/bin/rdo-solo
+
+# Defaults, overridable in /etc/rdo-solo.conf
+CONSOLE_IP=192.168.1.250
+GAME_PORTS_SINGLE=6672
+GAME_PORTS_RANGE=61455:61458
+CHAIN=RDO_SOLO
+LOG_CHAIN=RDO_LOGDROP
+NAT_CHAIN=RDO_NAT
+# Rockstar's NA online network (RSONET-NA1, 192.81.240.0/21). These relays knock
+# constantly and are STILL blocked; this pattern only hides them from the log so
+# what shows is real players. Extend in /etc/rdo-solo.conf if needed.
+ROCKSTAR_RE='192[.]81[.]24[0-7][.]'
+# Below Tailscale's first rule (5210) so the console is decided before it.
+RULE_PRIO=5200
+
+# shellcheck source=/dev/null
+if [ -r "$CONF" ]; then . "$CONF"; fi
+
+WAN_IF="${WAN_IF:-$(ip -4 route show default | awk '{print $5; exit}')}"
+
+die() { echo "error: $*" >&2; exit 1; }
+info() { echo "  $*"; }
+
+need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"; }
+
+# Docker sets the FORWARD policy to DROP and jumps to DOCKER-USER first, so that
+# chain is the correct place to hook: it survives docker restarts and an ACCEPT
+# there wins over the DROP policy.
+hook_chain() {
+  if iptables -n -L DOCKER-USER >/dev/null 2>&1; then echo DOCKER-USER; else echo FORWARD; fi
+}
+
+ensure_rule() {  # ensure_rule <chain> <rule...>  (idempotent, inserts at top)
+  local chain="$1"; shift
+  iptables -C "$chain" "$@" 2>/dev/null || iptables -I "$chain" 1 "$@"
+}
+
+# --- routing -----------------------------------------------------------------
+#
+# The exit-node attempt of 2026-08 left "default dev tailscale0" in routing
+# table 52, and Tailscale's ip rule 5270 sends EVERY forwarded packet through
+# that table. Console traffic was handed to tailscale0, where no exit node is
+# listening, and died there: it never even reached DOCKER-USER, because
+# ts-forward accepts anything leaving by tailscale0 and ACCEPT ends the
+# traversal. One rule below 5210 sends this single source back to main.
+#
+# Diagnose with: ip route get 203.0.113.1 from <console> iif <wan>
+# It must answer "via <modem> dev <wan>", never "dev tailscale0 table 52".
+route_fix() {
+  ip rule del from "$CONSOLE_IP" lookup main priority "$RULE_PRIO" 2>/dev/null || true
+  ip rule add from "$CONSOLE_IP" lookup main priority "$RULE_PRIO"
+}
+
+route_unfix() {
+  ip rule del from "$CONSOLE_IP" lookup main priority "$RULE_PRIO" 2>/dev/null || true
+}
+
+# --- filter ------------------------------------------------------------------
+install_chains() {
+  local hook; hook="$(hook_chain)"
+
+  iptables -n -L "$CHAIN" >/dev/null 2>&1 || iptables -N "$CHAIN"
+
+  # Insert in reverse order so the final order is: jump to CHAIN, then the ACCEPTs.
+  ensure_rule "$hook" -d "$CONSOLE_IP" -j ACCEPT
+  ensure_rule "$hook" -s "$CONSOLE_IP" -j ACCEPT
+  ensure_rule "$hook" -j "$CHAIN"
+
+  info "hooked into $hook"
+}
+
+# A counter cannot tell you WHO was blocked, only how many. This chain logs the
+# packet before dropping it, rate limited so a flood cannot fill the journal:
+# a handful of lines per minute is plenty to see who tried to reach you.
+ensure_logdrop() {
+  iptables -n -L "$LOG_CHAIN" >/dev/null 2>&1 || iptables -N "$LOG_CHAIN"
+  iptables -F "$LOG_CHAIN"
+  iptables -A "$LOG_CHAIN" -m limit --limit 10/min --limit-burst 5 \
+    -j LOG --log-prefix "RDO_BLOCK " --log-level 6
+  iptables -A "$LOG_CHAIN" -j DROP
+}
+
+# Addresses seen in the kernel log over the last N seconds, console excluded.
+blocked_since() {
+  local secs="$1"
+  journalctl -k --since "${secs} seconds ago" --no-pager -o cat 2>/dev/null \
+    | grep -F "RDO_BLOCK" \
+    | sed -nE 's/.*SRC=([0-9.]+) DST=([0-9.]+).*/\1 \2/p' \
+    | awk -v c="$CONSOLE_IP" '{print ($1==c) ? $2 : $1}' \
+    | sort | uniq -c | sort -rn || true
+}
+
+# Same list, minus Rockstar's own relays: what a human cares about is players.
+# The relays are still dropped by the filter; they are only hidden here.
+blocked_players() {
+  blocked_since "$1" | awk -v re="$ROCKSTAR_RE" '$2 !~ re' || true
+}
+
+# Drop the game's P2P ports in both directions and on both source and destination
+# port, because the console uses these as its local ports and peers use them as
+# theirs. Server traffic (TCP 80/443) is untouched, so the game stays online.
+load_drops() {
+  iptables -F "$CHAIN"
+  ensure_logdrop
+  local side port
+  for side in -s -d; do
+    for port in --sport --dport; do
+      iptables -A "$CHAIN" "$side" "$CONSOLE_IP" -p udp "$port" "$GAME_PORTS_SINGLE" -j "$LOG_CHAIN"
+      iptables -A "$CHAIN" "$side" "$CONSOLE_IP" -p udp "$port" "$GAME_PORTS_RANGE" -j "$LOG_CHAIN"
+    done
+  done
+}
+
+apply_state() {
+  local want; want="$(cat "$STATE_FILE" 2>/dev/null || echo off)"
+  if [ "$want" = "on" ]; then load_drops; else iptables -F "$CHAIN" 2>/dev/null || true; fi
+}
+
+# --- live monitor ------------------------------------------------------------
+#
+# Runs the loop HERE so the whole session costs one sudo prompt and the terminal
+# just streams. The drop count comes from the rule counters (they move when
+# packets really hit), and the addresses from the kernel log via blocked_since.
+cmd_watch() {
+  need_root
+  local interval="${1:-10}" on_exit="${2:-keep}"  # keep | off
+  local prev_state=""
+
+  local g="" r="" y="" d="" o=""
+  if [ -t 1 ]; then
+    g=$'\033[32m'; r=$'\033[31m'; y=$'\033[33m'; d=$'\033[2m'; o=$'\033[0m'
+  fi
+
+  # cmd_off is defined later in the file, but a trap body runs at signal time
+  # (after the whole script is parsed), so calling it here is fine.
+  if [ "$on_exit" = off ]; then
+    trap 'printf "\n  encerrando e desligando o filtro...\n"; cmd_off; exit 0' INT TERM
+  else
+    trap 'printf "\n  monitor encerrado (o filtro continua como está)\n"; exit 0' INT TERM
+  fi
+
+  echo "  monitor da sessão solo · console $CONSOLE_IP · atualiza a cada ${interval}s"
+  if [ "$on_exit" = off ]; then
+    echo "  Ctrl+C encerra e DESLIGA o filtro."
+  else
+    echo "  Ctrl+C encerra sem mexer no filtro."
+  fi
+  echo
+
+  while true; do
+    local now state counters
+    now="$(date +%H:%M:%S)"
+    counters="$(iptables -L "$CHAIN" -v -n -x 2>/dev/null)"
+    if grep -q "$LOG_CHAIN" <<< "$counters"; then state=ON; else state=OFF; fi
+
+    if [ "$state" != "$prev_state" ] && [ -n "$prev_state" ]; then
+      echo "  ${y}$now  *** o filtro mudou para $state ***${o}"
+    fi
+
+    if [ "$state" = OFF ]; then
+      printf '  %s  %sfiltro DESLIGADO%s · qualquer jogador pode entrar na sua sessão\n' "$now" "$y" "$o"
+    else
+      # Only real players earn a line; Rockstar's relays are dropped just the
+      # same but hidden, so a quiet session reads as quiet.
+      local plines pips psum
+      plines="$(blocked_players "$interval")"
+      if [ -n "$plines" ]; then
+        pips="$(awk '{printf "%s ", $2}' <<< "$plines")"; pips="${pips% }"
+        psum="$(awk '{s+=$1} END{print s+0}' <<< "$plines")"
+        printf '  %s  %sfiltro ativo%s · %sbarrou %s pacotes de: %s%s\n' "$now" "$g" "$o" "$r" "$psum" "$pips" "$o"
+      else
+        printf '  %s%s  filtro ativo · você está sozinho, ninguém tentou entrar%s\n' "$d" "$now" "$o"
+      fi
+    fi
+
+    # Two things that silently break everything; worth shouting about.
+    ip rule show | grep -q "^$RULE_PRIO:" || echo "  ${r}$now  !! a ip rule $RULE_PRIO sumiu: o console vai perder a internet${o}"
+    ip neigh show | grep -q "$CONSOLE_IP " || echo "  ${r}$now  !! o console sumiu da rede (desligado ou IP trocado)${o}"
+
+    prev_state="$state"
+    sleep "$interval"
+  done
+}
+
+# --- install / lifecycle -----------------------------------------------------
+cmd_install() {
+  need_root
+  command -v iptables >/dev/null || die "iptables not found"
+  [ -n "$WAN_IF" ] || die "could not detect the default-route interface"
+
+  info "interface: $WAN_IF"
+  info "console:   $CONSOLE_IP"
+
+  mkdir -p "$STATE_DIR"
+  [ -f "$STATE_FILE" ] || echo off > "$STATE_FILE"
+
+  if [ ! -f "$CONF" ]; then
+    cat > "$CONF" <<EOF
+# rdo-solo configuration
+CONSOLE_IP=$CONSOLE_IP
+WAN_IF=$WAN_IF
+EOF
+    info "wrote $CONF"
+  fi
+
+  # Routing prerequisites. send_redirects MUST be 0 or the console learns to talk
+  # to the modem directly and every filter rule below becomes decorative.
+  cat > "$SYSCTL_FILE" <<EOF
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.default.send_redirects=0
+net.ipv4.conf.$WAN_IF.send_redirects=0
+EOF
+  sysctl -q --system
+  info "applied $SYSCTL_FILE"
+
+  route_fix
+  info "ip rule $RULE_PRIO: $CONSOLE_IP -> table main"
+
+  install_chains
+  apply_state
+
+  # Persist across reboots. Ordered after docker so DOCKER-USER already exists,
+  # and after tailscaled so our ip rule is not clobbered by its own setup.
+  cat > "$UNIT" <<EOF
+[Unit]
+Description=rdo-solo firewall rules for the game console
+After=network-online.target docker.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$SELF boot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable -q rdo-solo.service
+  info "enabled rdo-solo.service"
+
+  if [ "$(readlink -f "$0")" != "$SELF" ]; then
+    install -m 0755 "$0" "$SELF"
+    info "installed $SELF"
+  fi
+
+  echo
+  echo "install done. filter is currently: $(cat "$STATE_FILE")"
+  echo "console gateway must be: $(ip -4 addr show "$WAN_IF" | awk '/inet /{print $2}' | cut -d/ -f1)"
+}
+
+cmd_on() {
+  need_root
+  iptables -n -L "$CHAIN" >/dev/null 2>&1 || install_chains
+  load_drops
+  echo on > "$STATE_FILE"
+  echo "solo filter ON for $CONSOLE_IP (udp $GAME_PORTS_SINGLE, $GAME_PORTS_RANGE)"
+  echo "  para jogar em bando, use 'rdo-solo off' (missões/séries já são privadas do bando)"
+}
+
+cmd_off() {
+  need_root
+  iptables -F "$CHAIN" 2>/dev/null || true
+  echo off > "$STATE_FILE"
+  echo "solo filter OFF (console plays normally)"
+}
+
+cmd_boot() { need_root; sysctl -q --system; route_fix; install_chains; apply_state; }
+
+cmd_status() {
+  need_root
+  local hook; hook="$(hook_chain)"
+  echo "state:      $(cat "$STATE_FILE" 2>/dev/null || echo unknown)"
+  echo "console:    $CONSOLE_IP"
+  echo "interface:  $WAN_IF   hook: $hook"
+  echo
+  echo "-- routing prerequisites --"
+  echo "  ip_forward       = $(sysctl -n net.ipv4.ip_forward)"
+  echo "  send_redirects   = $(sysctl -n "net.ipv4.conf.$WAN_IF.send_redirects") (must be 0)"
+  echo "  ip rule $RULE_PRIO     = $(ip rule show | grep -c "priority $RULE_PRIO\|^$RULE_PRIO:") (must be 1, else traffic goes to tailscale0)"
+  echo "  route from console: $(ip route get 1.1.1.1 from "$CONSOLE_IP" iif "$WAN_IF" 2>/dev/null | head -1)"
+  echo
+  echo "-- is the console actually routing through this host? --"
+  echo "   (packet counters on the ACCEPT rules; zero means it is NOT using us as gateway)"
+  iptables -L "$hook" -v -n --line-numbers | grep -E "^num|$CONSOLE_IP" || echo "   no rules found"
+  echo
+  echo "-- blocked P2P packets --"
+  iptables -L "$CHAIN" -v -n 2>/dev/null || echo "   chain missing"
+  echo
+  echo "-- console on the network? --"
+  ip neigh show | grep "$CONSOLE_IP" || echo "   $CONSOLE_IP not in the ARP cache (console off or different IP)"
+}
+
+# Optional fallback: only needed if the console has no internet with plain
+# forwarding, e.g. if the modem drops packets whose source it did not lease.
+cmd_nat_on() {
+  need_root
+  iptables -t nat -n -L "$NAT_CHAIN" >/dev/null 2>&1 || iptables -t nat -N "$NAT_CHAIN"
+  iptables -t nat -C POSTROUTING -j "$NAT_CHAIN" 2>/dev/null || iptables -t nat -I POSTROUTING 1 -j "$NAT_CHAIN"
+  iptables -t nat -C "$NAT_CHAIN" -s "$CONSOLE_IP" -o "$WAN_IF" -j MASQUERADE 2>/dev/null \
+    || iptables -t nat -A "$NAT_CHAIN" -s "$CONSOLE_IP" -o "$WAN_IF" -j MASQUERADE
+  echo "masquerade ON for $CONSOLE_IP"
+}
+
+cmd_nat_off() {
+  need_root
+  iptables -t nat -F "$NAT_CHAIN" 2>/dev/null || true
+  echo "masquerade OFF"
+}
+
+cmd_uninstall() {
+  need_root
+  local hook; hook="$(hook_chain)"
+  iptables -D "$hook" -j "$CHAIN" 2>/dev/null || true
+  iptables -D "$hook" -s "$CONSOLE_IP" -j ACCEPT 2>/dev/null || true
+  iptables -D "$hook" -d "$CONSOLE_IP" -j ACCEPT 2>/dev/null || true
+  iptables -F "$CHAIN" 2>/dev/null || true
+  iptables -X "$CHAIN" 2>/dev/null || true
+  iptables -F "$LOG_CHAIN" 2>/dev/null || true
+  iptables -X "$LOG_CHAIN" 2>/dev/null || true
+  cmd_nat_off || true
+  iptables -t nat -D POSTROUTING -j "$NAT_CHAIN" 2>/dev/null || true
+  iptables -t nat -X "$NAT_CHAIN" 2>/dev/null || true
+  route_unfix
+  systemctl disable -q rdo-solo.service 2>/dev/null || true
+  rm -f "$UNIT" "$SYSCTL_FILE"
+  systemctl daemon-reload
+  echo "uninstalled. remove the static IP on the console to restore its old path."
+  echo "note: $CONF and $STATE_DIR were kept."
+}
+
+case "${1:-}" in
+  install)     cmd_install ;;
+  on)          cmd_on ;;
+  off)         cmd_off ;;
+  status)      cmd_status ;;
+  watch)       cmd_watch "$2" "$3" ;;
+  blocked)     need_root; echo "players bloqueados nos ultimos ${2:-300}s (relays da Rockstar ocultos):"; blocked_players "${2:-300}" | while read -r n ip; do printf '  %-16s %s pacotes\n' "$ip" "$n"; done ;;
+  route-fix)   need_root; route_fix; echo "ip rule $RULE_PRIO applied for $CONSOLE_IP" ;;
+  route-unfix) need_root; route_unfix; echo "ip rule $RULE_PRIO removed" ;;
+  nat-on)      cmd_nat_on ;;
+  nat-off)     cmd_nat_off ;;
+  boot)        cmd_boot ;;
+  uninstall)   cmd_uninstall ;;
+  *) echo "usage: $(basename "$0") {install|on|off|watch|blocked|status|route-fix|route-unfix|nat-on|nat-off|boot|uninstall}" >&2; exit 2 ;;
+esac

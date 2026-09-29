@@ -1,0 +1,357 @@
+#!/usr/bin/env bash
+# rdo-solo - drive the homelab's Red Dead Online solo-session filter from this
+# machine, without opening an SSH session by hand.
+#
+# The work happens on the homelab (/usr/local/bin/rdo-solo, source of truth in
+# scripts/homelab/rdo-solo here): it drops the game's P2P UDP ports (6672 and
+# 61455-61458) for one console that uses the homelab as its IPv4 gateway, so the
+# session empties out while the Rockstar server traffic keeps flowing. This
+# wrapper carries the subcommand over SSH under sudo, so the password prompt
+# lands in your terminal.
+#
+# Silent-failure guard: the filter only bites when the console's CURRENT IP
+# matches CONSOLE_IP in /etc/rdo-solo.conf. If the console falls back to DHCP,
+# every rule still loads and blocks exactly nothing, so `on` refuses to run on a
+# mismatch instead of reporting a filter that does nothing.
+#
+# Do NOT use `set -u`: this environment's shell snapshot references an unset
+# $ZSH_VERSION and the script would die before running anything.
+set -eo pipefail
+
+HOST="${RDO_HOMELAB_HOST:-homelab}"
+REMOTE="${RDO_REMOTE_BIN:-/usr/local/bin/rdo-solo}"
+CONSOLE_MAC="${RDO_CONSOLE_MAC:-de:ad:be:ef:12:34}"
+SSH_OPTS=(-o ConnectTimeout=8)
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/rdo-solo"
+SELF_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PAYLOAD="$SELF_DIR/../../scripts/homelab/rdo-solo"
+
+c_off=$'\033[0m'; c_b=$'\033[1m'; c_ok=$'\033[32m'; c_bad=$'\033[31m'
+c_warn=$'\033[33m'; c_dim=$'\033[2m'
+if [ ! -t 1 ]; then c_off=; c_b=; c_ok=; c_bad=; c_warn=; c_dim=; fi
+
+F_CONF_IP=; F_WAN_IF=; F_STATE=; F_SERVICE=; F_GATEWAY=; F_LIVE_IP=; F_REMOTE_BIN=; F_MD5=
+FORCE=no; WATCH=no; WATCH_EVERY=10
+SSH_READY=no
+
+fail() { printf '%s%s%s\n' "$c_bad" "$*" "$c_off" >&2; }
+warn() { printf '%s%s%s\n' "$c_warn" "$*" "$c_off"; }
+
+usage() {
+  cat <<EOF
+${c_b}rdo-solo${c_off} - sessão solo do Red Dead Online, acionada daqui
+
+ uso normal
+  ${c_b}rdo-solo check${c_off}            estado atual (único que não pede senha)
+  ${c_b}rdo-solo on${c_off}               liga o bloqueio P2P: os outros jogadores somem
+  ${c_b}rdo-solo off${c_off}              desliga, o console volta ao normal
+  ${c_b}rdo-solo watch [s]${c_off}        monitor ao vivo do filtro
+  ${c_b}rdo-solo blocked [s]${c_off}      quem foi barrado nos últimos N segundos (padrão 300)
+  ${c_b}--watch[=s]${c_off}               emenda o monitor no 'on' (Ctrl+C desliga o filtro)
+
+ quando algo não funciona
+  ${c_b}rdo-solo status${c_off}           contadores e pré-requisitos de rota
+  ${c_b}rdo-solo trace [s]${c_off}        captura o tráfego do console e salva em arquivo
+  ${c_b}rdo-solo diag${c_off}             por que o encaminhamento está sendo barrado
+  ${c_b}rdo-solo fix-route${c_off}        tira o console da tabela de rotas do Tailscale
+
+ manutenção
+  ${c_b}rdo-solo console <ip>${c_off}     aponta o filtro para outro IP de console
+  ${c_b}rdo-solo deploy${c_off}           envia o script deste repo para o homelab
+  ${c_b}rdo-solo install|uninstall${c_off}
+  ${c_b}rdo-solo nat-on|nat-off${c_off}
+
+Flags: --force (ignora o guard de IP quando o console mudou de endereço).
+Variáveis: RDO_HOMELAB_HOST, RDO_CONSOLE_MAC, RDO_REMOTE_BIN.
+EOF
+}
+
+# --- remote plumbing ---------------------------------------------------------
+
+# Tailscale SSH periodically needs a browser re-check before it lets a new
+# session through, and in BatchMode that just fails silently (this is the
+# "Tailscale SSH requires an additional check" wall we hit before). Probe once
+# quietly; if it fails, open ONE interactive ssh so Tailscale can print its
+# check URL and you authenticate in the browser. That interactive attempt IS the
+# `ssh homelab` login the old error told you to run by hand. Cached, so it costs
+# a real round-trip only once per invocation.
+ensure_ssh() {
+  [ "$SSH_READY" = yes ] && return 0
+  if ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" true 2>/dev/null; then
+    SSH_READY=yes; return 0
+  fi
+  # Not reachable non-interactively: Tailscale re-auth, a first-time host key, or
+  # the host is down. The interactive attempt sorts out the first two; on the
+  # third it just fails again and we report it. Needs a real terminal to show the
+  # URL and read the browser callback, so bail clearly when there is none.
+  if [ ! -t 1 ] || ! : 2>/dev/null >/dev/tty; then
+    fail "não consigo falar com o homelab ($HOST) e não há terminal para autenticar."
+    fail "rode 'ssh $HOST' num terminal interativo e autentique no navegador."
+    exit 4
+  fi
+  printf '%sautenticando em %s (o Tailscale pode abrir o navegador; conclua o login)...%s
+' \
+    "$c_warn" "$HOST" "$c_off" >&2
+  ssh -tt "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$HOST" true </dev/tty || true
+  if ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" true 2>/dev/null; then
+    SSH_READY=yes
+    printf '%sautenticado.%s\n' "$c_ok" "$c_off" >&2
+    return 0
+  fi
+  fail "ainda não consigo alcançar o homelab ($HOST) por SSH."
+  fail "verifique se o Tailscale está no ar (tailscale status) e tente 'ssh $HOST' manualmente."
+  exit 4
+}
+
+
+# One SSH round-trip, no sudo: everything read here is world-readable.
+load_facts() {
+  ensure_ssh
+  local out
+  out=$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" \
+    "RDO_MAC=$(printf '%q' "$CONSOLE_MAC") bash -s" <<'REMOTE_EOF' 2>/dev/null
+conf=/etc/rdo-solo.conf
+wan=$(ip -4 route show default | awk '{print $5; exit}')
+echo "conf_ip=$(awk -F= '/^CONSOLE_IP=/{print $2}' "$conf" 2>/dev/null)"
+echo "wan_if=$(awk -F= '/^WAN_IF=/{print $2}' "$conf" 2>/dev/null)"
+echo "state=$(cat /var/lib/rdo-solo/state 2>/dev/null)"
+echo "service=$(systemctl is-active rdo-solo.service 2>/dev/null)"
+echo "gateway=$(ip -4 -o addr show "$wan" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
+echo "live_ip=$(ip neigh show | awk -v m="$RDO_MAC" 'tolower($5)==tolower(m){print $1; exit}')"
+echo "remote_bin=$([ -x /usr/local/bin/rdo-solo ] && echo yes || echo no)"
+echo "md5=$(md5sum /usr/local/bin/rdo-solo 2>/dev/null | cut -d" " -f1)"
+REMOTE_EOF
+  ) || {
+    fail "a sessão SSH com o homelab ($HOST) caiu no meio da consulta."
+    fail "tente de novo; se persistir, rode 'ssh $HOST' e verifique o Tailscale."
+    exit 4
+  }
+
+  local k v
+  while IFS='=' read -r k v; do
+    case "$k" in
+      conf_ip)    F_CONF_IP="$v" ;;
+      wan_if)     F_WAN_IF="$v" ;;
+      state)      F_STATE="$v" ;;
+      service)    F_SERVICE="$v" ;;
+      gateway)    F_GATEWAY="$v" ;;
+      live_ip)    F_LIVE_IP="$v" ;;
+      remote_bin) F_REMOTE_BIN="$v" ;;
+      md5)        F_MD5="$v" ;;
+    esac
+  done <<< "$out"
+
+  [ "$F_REMOTE_BIN" = yes ] || {
+    fail "o $REMOTE não está instalado no homelab. rode: rdo-solo deploy"
+    exit 5
+  }
+
+  if [ -r "$PAYLOAD" ] && [ -n "$F_MD5" ]; then
+    local local_md5
+    local_md5=$(md5sum "$PAYLOAD" 2>/dev/null | cut -d" " -f1)
+    if [ -n "$local_md5" ] && [ "$local_md5" != "$F_MD5" ]; then
+      warn "  o homelab está com uma versão DIFERENTE do script (${F_MD5:0:8} lá, ${local_md5:0:8} aqui)."
+      warn "  comandos novos vão responder 'usage:' até você rodar: rdo-solo deploy"
+      echo
+    fi
+  fi
+}
+
+# Runs one subcommand as root on the homelab. The -t gives sudo a TTY so the
+# password prompt is interactive here.
+ssh_root() {
+  ensure_ssh
+  local args; args=$(printf '%q ' "$@")
+  ssh -t "${SSH_OPTS[@]}" "$HOST" "sudo $REMOTE $args"
+}
+
+ssh_root_sh() {  # run an arbitrary root snippet
+  ensure_ssh
+  ssh -t "${SSH_OPTS[@]}" "$HOST" "sudo bash -c $(printf '%q' "$1")"
+}
+
+ip_matches() { [ -n "$F_LIVE_IP" ] && [ "$F_LIVE_IP" = "$F_CONF_IP" ]; }
+
+# --- commands ----------------------------------------------------------------
+
+show_check() {
+  local state_label
+  case "$F_STATE" in
+    on)  state_label="${c_bad}LIGADO${c_off} (sessão solo)" ;;
+    off) state_label="${c_ok}desligado${c_off} (sessão normal)" ;;
+    *)   state_label="${c_warn}desconhecido${c_off}" ;;
+  esac
+
+  printf '  filtro:     %b\n' "$state_label"
+  printf '  console:    %s (configurado)\n' "${F_CONF_IP:-?}"
+  printf '  console:    %s (na rede agora, pelo MAC %s)\n' "${F_LIVE_IP:-não encontrado}" "$CONSOLE_MAC"
+  printf '  gateway:    %s   interface: %s\n' "${F_GATEWAY:-?}" "${F_WAN_IF:-?}"
+  printf '  serviço:    %s\n' "${F_SERVICE:-?}"
+
+  if [ -z "$F_LIVE_IP" ]; then
+    echo
+    warn "  o console não está na tabela ARP do homelab: desligado, em standby,"
+    warn "  ou não fala com o homelab há um tempo. Ligue o Xbox e rode de novo."
+  elif ! ip_matches; then
+    echo
+    warn "  ATENÇÃO: o console está em $F_LIVE_IP, mas o filtro mira $F_CONF_IP."
+    warn "  Assim o bloqueio carrega e não pega nada. Duas saídas:"
+    warn "    1. no Xbox, volte o IP manual para $F_CONF_IP (gateway ${F_GATEWAY:-?}, DNS ${F_GATEWAY:-?})"
+    warn "    2. ou mire o IP atual aqui: rdo-solo console $F_LIVE_IP"
+  fi
+}
+
+require_ip_match() {
+  ip_matches && return 0
+  echo
+  fail "abortado: o filtro miraria $F_CONF_IP e o console está em ${F_LIVE_IP:-desconhecido}."
+  fail "ligar assim daria um 'ON' que não bloqueia nada. Resolva com uma das opções acima,"
+  fail "ou repita com --force se você sabe o que está fazendo."
+  exit 6
+}
+
+cmd_check() { load_facts; show_check; }
+
+cmd_status() {
+  load_facts
+  show_check
+  echo
+  printf '%s-- estado real das regras no homelab (pede a senha do sudo) --%s\n' "$c_dim" "$c_off"
+  ssh_root status
+}
+
+cmd_on() {
+  load_facts
+  show_check
+  [ "$FORCE" = yes ] || require_ip_match
+  echo
+  if [ "$WATCH" = yes ]; then
+    # Same sudo session, so the monitor starts without asking again.
+    ssh_root_sh "$REMOTE on && $REMOTE watch $WATCH_EVERY off"
+  else
+    ssh_root on
+    printf '%sentre na sessão: os outros jogadores somem em alguns segundos.%s\n' "$c_dim" "$c_off"
+  fi
+}
+
+cmd_off() { load_facts; ssh_root off; }
+
+cmd_console() {
+  local new="$1"
+  [[ "$new" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { fail "IP inválido: $new"; exit 2; }
+  load_facts
+  printf 'apontando o filtro de %s para %s\n' "${F_CONF_IP:-?}" "$new"
+  # Rebuild from scratch: the old ACCEPT rules carry the old IP and install
+  # alone would leave them behind as dead weight.
+  ssh_root_sh "set -e
+$REMOTE uninstall >/dev/null
+sed -i 's/^CONSOLE_IP=.*/CONSOLE_IP=$new/' /etc/rdo-solo.conf
+$REMOTE install"
+}
+
+cmd_trace() {
+  local secs="${1:-20}"
+  load_facts
+  [ -n "$F_WAN_IF" ] || { fail "não descobri a interface do homelab"; exit 5; }
+  mkdir -p "$CACHE_DIR"
+  local out
+  out="$CACHE_DIR/trace-$(date +%Y%m%d-%H%M%S).log"
+  printf 'capturando %ss do tráfego de %s (pede a senha do sudo)\n' "$secs" "$F_CONF_IP"
+  printf '%sdeixe o Xbox na sessão durante a captura%s\n\n' "$c_dim" "$c_off"
+  # timeout exits 124 when it fires, which is the normal end of a capture. The
+  # -t adds CRs, stripped so the log parses cleanly later.
+  ssh -t "${SSH_OPTS[@]}" "$HOST" \
+    "sudo timeout $secs tcpdump -i $F_WAN_IF -nn -q -c 2000 host $F_CONF_IP" \
+    | tr -d '\r' | tee "$out" || true
+  echo
+  printf 'log salvo em %s%s%s\n' "$c_b" "$out" "$c_off"
+}
+
+# The Tailscale exit-node leftovers put "default dev tailscale0" in table 52,
+# and ip rule 5270 sends every forwarded packet there. This is the same fix the
+# homelab script now applies on boot; kept here for ad-hoc use.
+cmd_fix_route() {
+  load_facts
+  if [ "$1" = off ]; then ssh_root route-unfix; else
+    ssh_root route-fix
+    ssh_root_sh "ip route get 203.0.113.1 from $F_CONF_IP iif ${F_WAN_IF:-eth0}"
+  fi
+}
+
+cmd_deploy() {
+  [ -r "$PAYLOAD" ] || { fail "não achei o script do homelab em $PAYLOAD"; exit 5; }
+  bash -n "$PAYLOAD" || { fail "o script do homelab tem erro de sintaxe, nada foi enviado"; exit 5; }
+  ensure_ssh  # scp precede o primeiro ssh_root_sh, então autentica aqui
+  printf 'enviando %s para %s\n' "$PAYLOAD" "$HOST"
+  scp -q "${SSH_OPTS[@]}" "$PAYLOAD" "$HOST:/tmp/rdo-solo.new" || { fail "scp falhou"; exit 5; }
+  ssh_root_sh "set -e
+install -m 0755 /tmp/rdo-solo.new $REMOTE
+rm -f /tmp/rdo-solo.new
+$REMOTE install"
+}
+
+cmd_diag() {
+  load_facts
+  local wan="${F_WAN_IF:-eth0}" CONSOLE="$F_CONF_IP" script
+  script=$(cat <<EOF
+echo "== FORWARD: policy e primeiras regras =="
+iptables -L FORWARD -n -v --line-numbers | head -20
+echo
+echo "== DOCKER-USER =="
+iptables -L DOCKER-USER -n -v --line-numbers 2>/dev/null || echo "(sem DOCKER-USER)"
+echo
+echo "== RDO_SOLO =="
+iptables -L RDO_SOLO -n -v 2>/dev/null || echo "(sem RDO_SOLO)"
+echo
+echo "== ufw =="
+command -v ufw >/dev/null && ufw status verbose | head -8 || echo "(ufw nao instalado)"
+echo
+echo "== sysctl =="
+sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.ipv4.conf.$wan.rp_filter 2>&1
+echo
+echo "== ts-forward (Tailscale, roda ANTES do docker) =="
+iptables -L ts-forward -n -v --line-numbers 2>/dev/null || echo "(sem ts-forward)"
+echo
+echo "== policy routing =="
+ip rule show
+echo
+echo "== tabela 52 (Tailscale) =="
+ip route show table 52 2>/dev/null | head -10 || echo "(vazia)"
+echo
+echo "== o que o kernel FARIA com um pacote do console =="
+ip route get 203.0.113.1 from $CONSOLE iif $wan 2>&1
+EOF
+)
+  printf 'diagnóstico do encaminhamento no homelab (pede a senha do sudo)\n\n'
+  ssh_root_sh "$script"
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+args=()
+for a in "$@"; do
+  case "$a" in
+    --force) FORCE=yes ;;
+    --watch) WATCH=yes ;;
+    --watch=*) WATCH=yes; WATCH_EVERY="${a#--watch=}" ;;
+    *) args+=("$a") ;;
+  esac
+done
+set -- "${args[@]}"
+
+case "${1:-check}" in
+  check)        cmd_check ;;
+  status)       cmd_status ;;
+  on)           cmd_on ;;
+  off)          cmd_off ;;
+  watch)        load_facts; ssh_root watch "${2:-$WATCH_EVERY}" ;;
+  trace)        cmd_trace "$2" ;;
+  diag)         cmd_diag ;;
+  fix-route)    cmd_fix_route "$2" ;;
+  blocked)      load_facts; ssh_root blocked "${2:-300}" ;;
+  console)      [ -n "$2" ] || { fail "uso: rdo-solo console <ip>"; exit 2; }; cmd_console "$2" ;;
+  deploy)       cmd_deploy ;;
+  install|boot|nat-on|nat-off|uninstall) ssh_root "$@" ;;
+  help|-h|--help) usage ;;
+  *) fail "subcomando desconhecido: $1"; echo; usage; exit 2 ;;
+esac
