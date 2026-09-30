@@ -1,0 +1,257 @@
+:root {
+  --bg: #0b0d10;
+  --card: #14181d;
+  --line: #232a31;
+  --fg: #e7edf3;
+  --muted: #8a97a3;
+  --active: #ff8c00;
+  --ok: #35c759;
+  --bad: #ff453a;
+  --accent: #2f7bff;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.wrap {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  min-height: 100dvh;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.brand h1 {
+  font-size: 20px;
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+.brand .ip {
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px;
+}
+.card.solo {
+  border-color: var(--active);
+  box-shadow: 0 0 0 1px var(--active) inset;
+}
+
+/* Big toggle button */
+.toggle {
+  width: 100%;
+  border: none;
+  border-radius: 20px;
+  padding: 34px 20px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  color: #fff;
+  cursor: pointer;
+  transition:
+    transform 0.05s ease,
+    background 0.15s ease;
+  background: #223042;
+}
+.toggle:active {
+  transform: scale(0.99);
+}
+.toggle.on {
+  background: linear-gradient(180deg, #ff9e2c, var(--active));
+  color: #201200;
+}
+.toggle.off {
+  background: linear-gradient(180deg, #2b3a4d, #1d2833);
+}
+.toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.state {
+  text-align: center;
+  font-size: 15px;
+  color: var(--muted);
+}
+.state b {
+  font-size: 26px;
+  display: block;
+  margin-bottom: 2px;
+}
+.state b.on {
+  color: var(--active);
+}
+.state b.off {
+  color: var(--muted);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.metric {
+  background: #0f1318;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.metric .k {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.metric .v {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.health {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+.dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.dot::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--bad);
+}
+.dot.ok::before {
+  background: var(--ok);
+}
+
+.warn {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 69, 58, 0.12);
+  border: 1px solid rgba(255, 69, 58, 0.4);
+  color: #ffb4ae;
+  font-size: 13px;
+}
+.warn.soft {
+  background: rgba(255, 140, 0, 0.12);
+  border-color: rgba(255, 140, 0, 0.4);
+  color: #ffd39b;
+}
+
+/* PIN screen */
+.login {
+  margin: auto 0;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.login p {
+  color: var(--muted);
+  margin: 0;
+}
+.pin {
+  width: 100%;
+  padding: 18px;
+  font-size: 26px;
+  text-align: center;
+  letter-spacing: 8px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #0f1318;
+  color: var(--fg);
+}
+.pin:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.btn {
+  padding: 16px;
+  border-radius: 14px;
+  border: none;
+  font-size: 17px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent);
+  cursor: pointer;
+}
+.btn:disabled {
+  opacity: 0.6;
+}
+.err {
+  color: var(--bad);
+  font-size: 14px;
+  min-height: 18px;
+}
+.drop {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--bad);
+  color: #fff;
+  font-weight: 800;
+  text-align: center;
+  font-size: 15px;
+}
+
+.conn {
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.conn .live {
+  color: var(--ok);
+}
+.conn .down {
+  color: var(--bad);
+}
+
+.force {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 0;
+}
