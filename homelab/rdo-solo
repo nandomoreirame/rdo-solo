@@ -44,6 +44,11 @@ NAT_CHAIN=RDO_NAT
 ROCKSTAR_RE='192[.]81[.]24[0-7][.]'
 # Below Tailscale's first rule (5210) so the console is decided before it.
 RULE_PRIO=5200
+# Docker bridge supernet. Forwarded container traffic gets the same escape as
+# the console: kept OUT of Tailscale's table 52 (see route_fix). Overridable in
+# the conf. One priority below the console rule, still above Tailscale's 5210.
+DOCKER_NET=172.16.0.0/12
+RULE_PRIO_DOCKER=5205
 
 # shellcheck source=/dev/null
 if [ -r "$CONF" ]; then . "$CONF"; fi
@@ -69,22 +74,30 @@ ensure_rule() {  # ensure_rule <chain> <rule...>  (idempotent, inserts at top)
 
 # --- routing -----------------------------------------------------------------
 #
-# The exit-node attempt of 2026-08 left "default dev tailscale0" in routing
-# table 52, and Tailscale's ip rule 5270 sends EVERY forwarded packet through
-# that table. Console traffic was handed to tailscale0, where no exit node is
-# listening, and died there: it never even reached DOCKER-USER, because
-# ts-forward accepts anything leaving by tailscale0 and ACCEPT ends the
-# traversal. One rule below 5210 sends this single source back to main.
+# Tailscale's ip rule 5270 (from all lookup 52) sends EVERY forwarded packet
+# through table 52, whose default is "dev tailscale0" (this host routes its own
+# internet through the tailnet exit node). That path is wrong for two sources:
+#   - the console: its P2P/session traffic must reach real peers, not the exit
+#     node, or the game session breaks entirely;
+#   - docker bridges: forwarded container traffic blackholes on tailscale0's
+#     1280 MTU (no MSS clamping), so small packets pass but large transfers
+#     (apt, image pulls) hang.
+# Both are sent straight back to the main table, just below Tailscale's first
+# rule (5210), so their internet flows through the modem. The exit node still
+# carries the host's own traffic.
 #
 # Diagnose with: ip route get 203.0.113.1 from <console> iif <wan>
 # It must answer "via <modem> dev <wan>", never "dev tailscale0 table 52".
 route_fix() {
   ip rule del from "$CONSOLE_IP" lookup main priority "$RULE_PRIO" 2>/dev/null || true
   ip rule add from "$CONSOLE_IP" lookup main priority "$RULE_PRIO"
+  ip rule del from "$DOCKER_NET" lookup main priority "$RULE_PRIO_DOCKER" 2>/dev/null || true
+  ip rule add from "$DOCKER_NET" lookup main priority "$RULE_PRIO_DOCKER"
 }
 
 route_unfix() {
   ip rule del from "$CONSOLE_IP" lookup main priority "$RULE_PRIO" 2>/dev/null || true
+  ip rule del from "$DOCKER_NET" lookup main priority "$RULE_PRIO_DOCKER" 2>/dev/null || true
 }
 
 # --- filter ------------------------------------------------------------------
@@ -248,6 +261,7 @@ EOF
 
   route_fix
   info "ip rule $RULE_PRIO: $CONSOLE_IP -> table main"
+  info "ip rule $RULE_PRIO_DOCKER: $DOCKER_NET -> table main (docker bridges)"
 
   install_chains
   apply_state
@@ -298,7 +312,14 @@ cmd_off() {
   echo "solo filter OFF (console plays normally)"
 }
 
-cmd_boot() { need_root; sysctl -q --system; route_fix; install_chains; apply_state; }
+# NAT is persisted here too: the modem (Vivo Box) drops the console's
+# forwarded packets unless their source is masqueraded to this host, so the
+# console has no internet without it, and nat-on is otherwise not restored on
+# boot. Set CONSOLE_NAT=0 in the conf if plain forwarding ever works again.
+cmd_boot() {
+  need_root; sysctl -q --system; route_fix; install_chains; apply_state
+  [ "${CONSOLE_NAT:-1}" = 0 ] || cmd_nat_on
+}
 
 cmd_status() {
   need_root
@@ -311,6 +332,7 @@ cmd_status() {
   echo "  ip_forward       = $(sysctl -n net.ipv4.ip_forward)"
   echo "  send_redirects   = $(sysctl -n "net.ipv4.conf.$WAN_IF.send_redirects") (must be 0)"
   echo "  ip rule $RULE_PRIO     = $(ip rule show | grep -c "priority $RULE_PRIO\|^$RULE_PRIO:") (must be 1, else traffic goes to tailscale0)"
+  echo "  ip rule $RULE_PRIO_DOCKER     = $(ip rule show | grep -c "priority $RULE_PRIO_DOCKER\|^$RULE_PRIO_DOCKER:") (must be 1, else docker bridges go to tailscale0)"
   echo "  route from console: $(ip route get 1.1.1.1 from "$CONSOLE_IP" iif "$WAN_IF" 2>/dev/null | head -1)"
   echo
   echo "-- is the console actually routing through this host? --"
