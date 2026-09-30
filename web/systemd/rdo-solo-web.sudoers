@@ -1,0 +1,11 @@
+# /etc/sudoers.d/rdo-solo-web   (install as root, mode 0440)
+#   sudo install -m 0440 rdo-solo-web.sudoers /etc/sudoers.d/rdo-solo-web
+#   sudo visudo -c        # validate before trusting it
+#
+# Lets the panel's service user flip the P2P filter and read status WITHOUT a
+# password, and nothing else. Replace CHANGE_ME with the service user and adjust
+# the binary path if rdo-solo-tui lives elsewhere.
+
+Cmnd_Alias RDO_SOLO = /usr/local/bin/rdo-solo-tui on, /usr/local/bin/rdo-solo-tui off, /usr/local/bin/rdo-solo-tui status --json
+
+CHANGE_ME ALL=(root) NOPASSWD: RDO_SOLO

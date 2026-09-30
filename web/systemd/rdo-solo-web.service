@@ -1,0 +1,29 @@
+# /etc/systemd/system/rdo-solo-web.service
+#
+# Runs the web control panel on the gateway. Adjust User, WorkingDirectory and
+# the node/npm path for your host. The service user needs:
+#   - the sudoers rule in rdo-solo-web.sudoers (to flip the filter)
+#   - membership in the `systemd-journal` group (to count blocks live)
+#
+#   sudo usermod -aG systemd-journal <user>
+
+[Unit]
+Description=rdo-solo web control panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+WorkingDirectory=/opt/rdo-solo-web
+EnvironmentFile=/opt/rdo-solo-web/.env.local
+# `npm run start` runs the custom server (tsx server.ts). Use the absolute path
+# to npm on the gateway (e.g. /usr/bin/npm, or the mise/nvm shim's real path).
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=3
+# Needs sudo for the rdo-solo command, so privileges are not fully dropped.
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

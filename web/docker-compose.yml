@@ -1,0 +1,38 @@
+# rdo-solo-web for CasaOS / Docker on the gateway.
+#
+# WHY host network + privileged: this app controls the HOST firewall
+# (iptables / ip rule / sysctl) through the rdo-solo-tui binary. A normal bridged
+# container would only touch its own network namespace, so it must share the
+# host's. The container runs as root, so RDO_SUDO=0 (no sudoers needed).
+#
+# Prereqs on the host:
+#   - rdo-solo-tui installed at /usr/local/bin (with `status --json`)
+#   - /etc/rdo-solo.conf present, /var/lib/rdo-solo exists
+#   - build the image on the host:  docker build -t rdo-solo-web:latest .
+#
+# Then in CasaOS: Apps > "+" > Install a customized app > import this compose.
+# EDIT RDO_PIN and RDO_SESSION_SECRET below before starting (do not commit real
+# values). Reach it at http://<gateway>:3737 (or rdo.home once DNS is set).
+
+services:
+  rdo-solo-web:
+    image: rdo-solo-web:latest
+    build: .
+    container_name: rdo-solo-web
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    # Config, secrets and the Discord webhook come from .env (copy .env.example).
+    # Never commit real values. Edit .env and restart the container to change them.
+    env_file:
+      - .env
+    volumes:
+      - /usr/local/bin/rdo-solo-tui:/usr/local/bin/rdo-solo-tui:ro
+      - /etc/rdo-solo.conf:/etc/rdo-solo.conf:ro
+      - /var/lib/rdo-solo:/var/lib/rdo-solo
+      # Live block/IP counters need the host journal + journalctl in the image.
+      # Left off by default (counters stay 0); to enable, add `systemd` to the
+      # Dockerfile apt install and uncomment:
+      # - /var/log/journal:/var/log/journal:ro
+      # - /run/log/journal:/run/log/journal:ro
+      # - /etc/machine-id:/etc/machine-id:ro
