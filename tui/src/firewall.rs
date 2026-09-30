@@ -107,41 +107,11 @@ pub fn route_fix(cfg: &Config) -> Result<()> {
             RULE_PRIO,
         ],
         false,
-    )?;
-    // Docker bridges get the same escape from Tailscale's table 52; forwarded
-    // container traffic otherwise blackholes on tailscale0's 1280 MTU.
-    let _ = run(
-        "ip",
-        &[
-            "rule",
-            "del",
-            "from",
-            DOCKER_NET,
-            "lookup",
-            "main",
-            "priority",
-            RULE_PRIO_DOCKER,
-        ],
-        true,
-    );
-    run(
-        "ip",
-        &[
-            "rule",
-            "add",
-            "from",
-            DOCKER_NET,
-            "lookup",
-            "main",
-            "priority",
-            RULE_PRIO_DOCKER,
-        ],
-        false,
     )
 }
 
 pub fn route_unfix(cfg: &Config) -> Result<()> {
-    let _ = run(
+    run(
         "ip",
         &[
             "rule",
@@ -152,20 +122,6 @@ pub fn route_unfix(cfg: &Config) -> Result<()> {
             "main",
             "priority",
             RULE_PRIO,
-        ],
-        true,
-    );
-    run(
-        "ip",
-        &[
-            "rule",
-            "del",
-            "from",
-            DOCKER_NET,
-            "lookup",
-            "main",
-            "priority",
-            RULE_PRIO_DOCKER,
         ],
         true,
     )

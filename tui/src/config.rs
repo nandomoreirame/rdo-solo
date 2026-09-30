@@ -17,10 +17,6 @@ pub const CHAIN: &str = "RDO_SOLO";
 pub const LOG_CHAIN: &str = "RDO_LOGDROP";
 pub const NAT_CHAIN: &str = "RDO_NAT";
 pub const RULE_PRIO: &str = "5200";
-/// Docker's default bridge address pool. Forwarded container traffic gets the
-/// same escape as the console (out of Tailscale's table 52), one priority below.
-pub const DOCKER_NET: &str = "172.16.0.0/12";
-pub const RULE_PRIO_DOCKER: &str = "5205";
 
 // The game's peer-to-peer UDP ports. A single port and a contiguous range.
 pub const GAME_PORT_SINGLE: &str = "6672";
