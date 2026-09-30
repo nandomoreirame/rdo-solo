@@ -77,8 +77,14 @@ fn run(sub: &str) -> Result<()> {
             Ok(())
         }
         "status" => {
-            for l in firewall::status_lines(&cfg) {
-                println!("{l}");
+            // `status --json` feeds the web control panel; plain `status` stays
+            // human-readable for the CLI.
+            if std::env::args().any(|a| a == "--json") {
+                print_status_json(&cfg);
+            } else {
+                for l in firewall::status_lines(&cfg) {
+                    println!("{l}");
+                }
             }
             Ok(())
         }
@@ -141,12 +147,52 @@ fn run(sub: &str) -> Result<()> {
     }
 }
 
+/// Emit the current state and route health as a single JSON line. Written by
+/// hand (no serde) to keep the static musl binary small; every value is a bool,
+/// an integer, or an IP string with no characters that need escaping.
+fn print_status_json(cfg: &Config) {
+    let state = firewall::read_state();
+    let solo = state == "on";
+    let h = firewall::health(cfg);
+    let since = std::fs::metadata(config::STATE_FILE)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    let since_json = match since {
+        Some(s) => s.to_string(),
+        None => "null".to_string(),
+    };
+    let label = cfg
+        .console_label
+        .as_deref()
+        .unwrap_or("")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    println!(
+        "{{\"solo\":{solo},\"state\":\"{state}\",\"since_epoch\":{since_json},\
+         \"console_ip\":\"{ip}\",\"console_label\":\"{label}\",\
+         \"health\":{{\"forwarding\":{fwd},\"redirects_ok\":{red},\
+         \"route_rule\":{rr},\"console_present\":{cp},\"ip_mismatch\":{mm},\
+         \"console_ipv6\":{v6},\"gateway_pkts\":{gp},\"ok\":{ok}}}}}",
+        ip = cfg.console_ip,
+        fwd = h.forwarding,
+        red = h.redirects_ok,
+        rr = h.route_rule,
+        cp = h.console_present,
+        mm = h.ip_mismatch,
+        v6 = h.console_ipv6,
+        gp = h.gateway_pkts,
+        ok = h.ok(),
+    );
+}
+
 fn print_help() {
     println!(
         "rdo-solo-tui — sessão solo do Red Dead Online (roda no homelab)\n\n\
          sem argumento         abre a TUI (tabs de rede, toggle solo, tentativas)\n\
          on | off              liga/desliga o bloqueio P2P\n\
-         status                estado e pré-requisitos de rota\n\
+         status [--json]       estado e pré-requisitos de rota (--json p/ o painel web)\n\
          boot                  reaplica no boot (usado pelo systemd)\n\
          install | uninstall   instala/remove o serviço e as regras\n\
          nat-on | nat-off      masquerade do console (fallback)\n\

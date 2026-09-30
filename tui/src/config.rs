@@ -17,6 +17,10 @@ pub const CHAIN: &str = "RDO_SOLO";
 pub const LOG_CHAIN: &str = "RDO_LOGDROP";
 pub const NAT_CHAIN: &str = "RDO_NAT";
 pub const RULE_PRIO: &str = "5200";
+/// Docker's default bridge address pool. Forwarded container traffic gets the
+/// same escape as the console (out of Tailscale's table 52), one priority below.
+pub const DOCKER_NET: &str = "172.16.0.0/12";
+pub const RULE_PRIO_DOCKER: &str = "5205";
 
 // The game's peer-to-peer UDP ports. A single port and a contiguous range.
 pub const GAME_PORT_SINGLE: &str = "6672";
@@ -34,6 +38,8 @@ pub struct Config {
     /// Optional path to a MaxMind GeoLite2 City .mmdb. When set (or found in a
     /// default location), peers are enriched with "City, CC".
     pub geoip_db: Option<String>,
+    /// Optional friendly name for the console, shown instead of its IP.
+    pub console_label: Option<String>,
 }
 
 impl Config {
@@ -44,6 +50,7 @@ impl Config {
         let mut console_mac = None;
         let mut ntfy_url = None;
         let mut geoip_db = None;
+        let mut console_label = None;
 
         if let Ok(text) = fs::read_to_string(CONF_PATH) {
             for line in text.lines() {
@@ -70,6 +77,11 @@ impl Config {
                     if !v.is_empty() {
                         geoip_db = Some(v.to_string());
                     }
+                } else if let Some(v) = line.strip_prefix("CONSOLE_LABEL=") {
+                    let v = v.trim();
+                    if !v.is_empty() {
+                        console_label = Some(v.to_string());
+                    }
                 }
             }
         }
@@ -84,6 +96,7 @@ impl Config {
             console_mac,
             ntfy_url,
             geoip_db,
+            console_label,
         }
     }
 }

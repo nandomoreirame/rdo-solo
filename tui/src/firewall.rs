@@ -107,11 +107,41 @@ pub fn route_fix(cfg: &Config) -> Result<()> {
             RULE_PRIO,
         ],
         false,
+    )?;
+    // Docker bridges get the same escape from Tailscale's table 52; forwarded
+    // container traffic otherwise blackholes on tailscale0's 1280 MTU.
+    let _ = run(
+        "ip",
+        &[
+            "rule",
+            "del",
+            "from",
+            DOCKER_NET,
+            "lookup",
+            "main",
+            "priority",
+            RULE_PRIO_DOCKER,
+        ],
+        true,
+    );
+    run(
+        "ip",
+        &[
+            "rule",
+            "add",
+            "from",
+            DOCKER_NET,
+            "lookup",
+            "main",
+            "priority",
+            RULE_PRIO_DOCKER,
+        ],
+        false,
     )
 }
 
 pub fn route_unfix(cfg: &Config) -> Result<()> {
-    run(
+    let _ = run(
         "ip",
         &[
             "rule",
@@ -122,6 +152,20 @@ pub fn route_unfix(cfg: &Config) -> Result<()> {
             "main",
             "priority",
             RULE_PRIO,
+        ],
+        true,
+    );
+    run(
+        "ip",
+        &[
+            "rule",
+            "del",
+            "from",
+            DOCKER_NET,
+            "lookup",
+            "main",
+            "priority",
+            RULE_PRIO_DOCKER,
         ],
         true,
     )
@@ -261,6 +305,10 @@ pub fn cmd_boot(cfg: &Config) -> Result<()> {
     route_fix(cfg)?;
     install_chains(cfg)?;
     apply_state(cfg)?;
+    // Persist NAT too: the modem drops the console's forwarded packets unless
+    // their source is masqueraded to this host, so nat-on must be restored here
+    // (it is otherwise not reapplied on boot).
+    cmd_nat_on(cfg)?;
     Ok(())
 }
 

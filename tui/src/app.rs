@@ -841,8 +841,14 @@ fn render_header(f: &mut Frame, app: &mut App, area: Rect) {
                 .bg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  console "),
-        Span::styled(app.cfg.console_ip.clone(), Style::default().fg(Color::Cyan)),
+        Span::raw("  console: "),
+        Span::styled(
+            app.cfg
+                .console_label
+                .clone()
+                .unwrap_or_else(|| app.cfg.console_ip.clone()),
+            Style::default().fg(Color::Cyan),
+        ),
     ]);
     f.render_widget(Paragraph::new(l1), left1);
     f.render_widget(
