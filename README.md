@@ -25,6 +25,7 @@ console: o valor está na topologia (gateway), não no binário.
 | `homelab/rdo-solo.md` | documentação detalhada: topologia, comandos, armadilhas, termos de uso. |
 | `workstation/rdo-solo` | wrapper que você digita na sua máquina; leva o comando por SSH e roda sob `sudo` no gateway. |
 | `tui/` | porte em Rust: uma TUI (ratatui) com abas de rede, toggle de solo, jogadores na sessão, GeoIP e histórico. Ver `tui/README.md`. |
+| `web/` | painel web (Next.js + WebSocket) para ligar/desligar o solo do celular, pela LAN ou Tailscale. Ver `web/README.md`. |
 
 ## Requisitos
 
