@@ -1,9 +1,16 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { isAuthed } from "@/lib/authGuard";
-import { toggleSolo, readStatus } from "@/lib/rdo";
+import { setMode, readStatus } from "@/lib/rdo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function modeFromAction(action: string): "off" | "solo" | "squad" | null {
+  if (action === "off") return "off";
+  if (action === "on" || action === "solo") return "solo";
+  if (action === "squad") return "squad";
+  return null;
+}
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!isAuthed(req)) {
@@ -16,12 +23,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   } catch {
     // handled by the validation below
   }
-  if (action !== "on" && action !== "off") {
+  const mode = modeFromAction(action);
+  if (mode === null) {
     return NextResponse.json({ ok: false, error: "ação inválida" }, { status: 400 });
   }
 
   try {
-    await toggleSolo(action === "on");
+    await setMode(mode);
     const status = await readStatus();
     return NextResponse.json({ ok: true, status });
   } catch {
