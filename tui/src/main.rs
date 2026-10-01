@@ -196,31 +196,59 @@ fn run(sub: &str, args: &[String]) -> Result<()> {
 /// an integer, or an IP string with no characters that need escaping.
 fn print_status_json(cfg: &Config) {
     let mode = firewall::read_state();
-    let solo = mode == crate::squad::Mode::Solo;
-    let state = mode.as_str();
     let h = firewall::health(cfg);
     let since = std::fs::metadata(config::STATE_FILE)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs());
-    let since_json = match since {
+    let label = cfg.console_label.as_deref().unwrap_or("");
+    let squad = squad::read_squad();
+    let captured = squad::captured_at();
+    println!(
+        "{}",
+        render_status_json(
+            since,
+            &cfg.console_ip,
+            label,
+            &h,
+            mode.as_str(),
+            &squad,
+            captured.as_deref(),
+        )
+    );
+}
+
+/// Pure JSON builder for `status --json` (testable without real state files).
+fn render_status_json(
+    since_epoch: Option<u64>,
+    console_ip: &str,
+    console_label: &str,
+    h: &firewall::Health,
+    mode: &str,
+    squad: &[String],
+    captured_at: Option<&str>,
+) -> String {
+    // Back-compat: `solo` is true whenever the filter is active (solo or squad).
+    let solo = mode != "off";
+    let since_json = match since_epoch {
         Some(s) => s.to_string(),
         None => "null".to_string(),
     };
-    let label = cfg
-        .console_label
-        .as_deref()
-        .unwrap_or("")
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    println!(
-        "{{\"solo\":{solo},\"state\":\"{state}\",\"since_epoch\":{since_json},\
-         \"console_ip\":\"{ip}\",\"console_label\":\"{label}\",\
+    let label = console_label.replace('\\', "\\\\").replace('"', "\\\"");
+    let squad_json = json_string_array(squad);
+    let captured_json = match captured_at {
+        Some(v) => format!("\"{v}\""),
+        None => "null".to_string(),
+    };
+    format!(
+        "{{\"solo\":{solo},\"state\":\"{mode}\",\"mode\":\"{mode}\",\
+         \"squad\":{squad_json},\"squad_captured_at\":{captured_json},\
+         \"since_epoch\":{since_json},\
+         \"console_ip\":\"{console_ip}\",\"console_label\":\"{label}\",\
          \"health\":{{\"forwarding\":{fwd},\"redirects_ok\":{red},\
          \"route_rule\":{rr},\"console_present\":{cp},\"ip_mismatch\":{mm},\
          \"console_ipv6\":{v6},\"gateway_pkts\":{gp},\"ok\":{ok}}}}}",
-        ip = cfg.console_ip,
         fwd = h.forwarding,
         red = h.redirects_ok,
         rr = h.route_rule,
@@ -229,7 +257,73 @@ fn print_status_json(cfg: &Config) {
         v6 = h.console_ipv6,
         gp = h.gateway_pkts,
         ok = h.ok(),
-    );
+    )
+}
+
+/// Build a JSON array of strings. Values are assumed safe (validated IPv4).
+fn json_string_array(items: &[String]) -> String {
+    let mut s = String::from("[");
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            s.push(',');
+        }
+        s.push('"');
+        s.push_str(item);
+        s.push('"');
+    }
+    s.push(']');
+    s
+}
+
+#[cfg(test)]
+mod status_json_tests {
+    use super::render_status_json;
+    use crate::firewall::Health;
+
+    fn dummy_health() -> Health {
+        Health {
+            forwarding: true,
+            redirects_ok: true,
+            route_rule: true,
+            console_present: true,
+            gateway_pkts: 42,
+            console_ipv6: false,
+            ip_mismatch: false,
+            live_ip: None,
+        }
+    }
+
+    fn dummy(mode: &str, squad: &[String], captured_at: Option<&str>) -> String {
+        render_status_json(
+            Some(1_700_000_000),
+            "192.168.1.50",
+            "PS5",
+            &dummy_health(),
+            mode,
+            squad,
+            captured_at,
+        )
+    }
+
+    #[test]
+    fn status_json_includes_mode_and_squad() {
+        let json = dummy(
+            "squad",
+            &["1.2.3.4".to_string()],
+            Some("2026-09-30T10:00:00Z"),
+        );
+        assert!(json.contains("\"mode\":\"squad\""));
+        assert!(json.contains("\"squad\":[\"1.2.3.4\"]"));
+        assert!(json.contains("\"squad_captured_at\":\"2026-09-30T10:00:00Z\""));
+    }
+
+    #[test]
+    fn status_json_squad_null_when_absent() {
+        let json = dummy("off", &[], None);
+        assert!(json.contains("\"mode\":\"off\""));
+        assert!(json.contains("\"squad\":[]"));
+        assert!(json.contains("\"squad_captured_at\":null"));
+    }
 }
 
 fn print_help() {

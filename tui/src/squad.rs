@@ -1,7 +1,5 @@
 // Squad allowlist: capture of current session peers + mode state.
 // Ported 1:1 into homelab/rdo-solo (shell). No serde (keep the musl binary small).
-// Not yet wired into main; keep clippy green until later tasks consume these APIs.
-#![allow(dead_code)]
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -84,9 +82,40 @@ pub fn clear_squad() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Value after `# captured_at=` on the squad file header line, if present.
+pub fn captured_at() -> Option<String> {
+    fs::read_to_string(SQUAD_FILE)
+        .ok()
+        .and_then(|b| parse_captured_at(&b))
+}
+
+fn parse_captured_at(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("# captured_at=") {
+            let v = rest.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_captured_at_reads_header() {
+        let body = "# captured_at=2026-09-30T10:00:00Z\n1.2.3.4\n";
+        assert_eq!(
+            parse_captured_at(body).as_deref(),
+            Some("2026-09-30T10:00:00Z")
+        );
+        assert_eq!(parse_captured_at("1.2.3.4\n"), None);
+        assert_eq!(parse_captured_at(""), None);
+    }
 
     #[test]
     fn mode_parse_and_legacy_on() {
