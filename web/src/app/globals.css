@@ -255,3 +255,69 @@ body {
   cursor: pointer;
   padding: 0;
 }
+
+.alone {
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 6px 0 0;
+}
+.alone b {
+  color: var(--fg);
+}
+
+.peerlist {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.peerlist li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.peerlist .pc {
+  flex: 1;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.peerlist .pip {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.peerlist .pn {
+  color: var(--muted);
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.clean-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 0;
+}
+
+/* Full-viewport orange frame while solo is active, like the TUI's border. */
+.solo-frame {
+  position: fixed;
+  inset: 0;
+  border: 3px solid var(--active);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 50;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 140, 0, 0.35),
+    inset 0 0 26px rgba(255, 140, 0, 0.12);
+}

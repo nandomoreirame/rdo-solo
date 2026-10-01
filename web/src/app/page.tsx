@@ -10,6 +10,12 @@ interface WsMessage {
   data?: PanelStatus;
 }
 
+/** 2-letter country code -> flag emoji ("" if unknown). */
+function flag(cc: string): string {
+  if (!/^[A-Za-z]{2}$/.test(cc)) return "";
+  return cc.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)));
+}
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [status, setStatus] = useState<PanelStatus | null>(null);
@@ -19,6 +25,25 @@ export default function Home() {
   const [live, setLive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [forced, setForced] = useState(false);
+  const [clean, setClean] = useState(false);
+  useEffect(() => {
+    try {
+      setClean(localStorage.getItem("rdo_clean") === "1");
+    } catch {
+      /* storage may be unavailable */
+    }
+  }, []);
+  const toggleClean = useCallback(() => {
+    setClean((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem("rdo_clean", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mounted = useRef(true);
@@ -180,6 +205,7 @@ export default function Home() {
   const h = status?.health;
   const gate = soloGate(status);
   const gateBlocked = !solo && gate.blocked;
+  const peers = status?.peers ?? [];
   const uptime =
     solo && status?.since_epoch ? formatUptime(now - status.since_epoch * 1000) : "—";
 
@@ -191,6 +217,7 @@ export default function Home() {
 
   return (
     <main className="wrap">
+      {solo && <div className="solo-frame" aria-hidden="true" />}
       <div className="brand">
         <h1>rdo-solo</h1>
         <span className="ip">console: {status?.console_label || status?.console_ip || "—"}</span>
@@ -215,6 +242,11 @@ export default function Home() {
           <b className={solo ? "on" : "off"}>{solo ? "SOLO ATIVO" : "SOLO INATIVO"}</b>
           {solo ? `há ${uptime}` : "jogando normalmente"}
         </p>
+        {!solo && status?.alone_ms != null && (
+          <p className="alone">
+            Tempo sozinho na sessão: <b>{formatUptime(status.alone_ms)}</b>
+          </p>
+        )}
         {gateBlocked && (
           <div className="warn soft">
             {gate.reason}{" "}
@@ -228,28 +260,53 @@ export default function Home() {
         {warn && <div className={`warn ${warn.soft ? "soft" : ""}`}>{warn.text}</div>}
       </div>
 
-      <div className="grid">
-        <div className="metric">
-          <div className="k">bloqueios</div>
-          <div className="v">{status?.blocked ?? 0}</div>
-        </div>
-        <div className="metric">
-          <div className="k">IPs distintos</div>
-          <div className="v">{status?.unique_ips ?? 0}</div>
-        </div>
-      </div>
+      {!clean && (
+        <>
+          <div className="grid">
+            <div className="metric">
+              <div className="k">bloqueios</div>
+              <div className="v">{status?.blocked ?? 0}</div>
+            </div>
+            <div className="metric">
+              <div className="k">IPs distintos</div>
+              <div className="v">{status?.unique_ips ?? 0}</div>
+            </div>
+          </div>
 
-      <div className="card">
-        <div className="health">
-          <span className={`dot ${h?.forwarding ? "ok" : ""}`}>encaminha</span>
-          <span className={`dot ${h?.redirects_ok ? "ok" : ""}`}>redirec.</span>
-          <span className={`dot ${h?.route_rule ? "ok" : ""}`}>rota</span>
-          <span className={`dot ${h?.console_present && !h?.ip_mismatch ? "ok" : ""}`}>console</span>
-        </div>
-      </div>
+          {peers.length > 0 && (
+            <div className="card">
+              <div className="k">{solo ? "tentando entrar (bloqueados)" : "na sua sessão"}</div>
+              <ul className="peerlist">
+                {peers.slice(0, 10).map((p) => (
+                  <li key={p.ip}>
+                    <span className="pc">
+                      {flag(p.cc)} {p.country || "país desconhecido"}
+                    </span>
+                    <span className="pip">{p.ip}</span>
+                    <span className="pn">{p.count}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="card">
+            <div className="health">
+              <span className={`dot ${h?.forwarding ? "ok" : ""}`}>encaminha</span>
+              <span className={`dot ${h?.redirects_ok ? "ok" : ""}`}>redirec.</span>
+              <span className={`dot ${h?.route_rule ? "ok" : ""}`}>rota</span>
+              <span className={`dot ${h?.console_present && !h?.ip_mismatch ? "ok" : ""}`}>console</span>
+            </div>
+          </div>
+        </>
+      )}
 
       <div className="conn">
         {live ? <span className="live">● ao vivo</span> : <span className="down">● reconectando…</span>}
+        {" · "}
+        <button type="button" className="clean-toggle" onClick={toggleClean}>
+          {clean ? "modo completo" : "modo limpo"}
+        </button>
         {err && <div className="err">{err}</div>}
       </div>
     </main>
