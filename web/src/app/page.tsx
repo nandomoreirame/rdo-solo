@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { formatUptime, soloGate, type PanelStatus } from "@/lib/status";
+import { MOCK, initialMock, mockSetMode, mockCapture, mockClearSquad } from "@/lib/mockStatus";
+import { readPanelOpen, writePanelOpen } from "@/lib/panelState";
 
 type Phase = "loading" | "login" | "ready";
 
@@ -22,29 +24,28 @@ export default function Home() {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [live, setLive] = useState(false);
+  const [, setLive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [forced, setForced] = useState(false);
-  const [clean, setClean] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
   useEffect(() => {
-    try {
-      setClean(localStorage.getItem("rdo_clean") === "1");
-    } catch {
-      /* storage may be unavailable */
-    }
+    setPanelOpen(readPanelOpen(true));
   }, []);
-  const toggleClean = useCallback(() => {
-    setClean((c) => {
-      const next = !c;
-      try {
-        localStorage.setItem("rdo_clean", next ? "1" : "0");
-      } catch {
-        /* ignore */
-      }
+  const togglePanel = useCallback(() => {
+    setPanelOpen((v) => {
+      const next = !v;
+      writePanelOpen(next);
       return next;
     });
   }, []);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && panelOpen) togglePanel();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [panelOpen, togglePanel]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const mounted = useRef(true);
@@ -80,6 +81,13 @@ export default function Home() {
   useEffect(() => {
     mounted.current = true;
     (async () => {
+      if (MOCK) {
+        setStatus(initialMock());
+        readyRef.current = true;
+        setPhase("ready");
+        setLive(true);
+        return;
+      }
       try {
         const r = await fetch("/api/status", { cache: "no-store" });
         if (r.ok) {
@@ -137,6 +145,13 @@ export default function Home() {
 
   async function postSoloAction(action: "on" | "off" | "squad") {
     if (!status || busy) return;
+    if (MOCK) {
+      const mode = action === "on" ? "solo" : action === "squad" ? "squad" : "off";
+      setStatus((s) => (s ? mockSetMode(s, mode) : s));
+      setForced(false);
+      setCaptureMsg(null);
+      return;
+    }
     setBusy(true);
     setErr("");
     setCaptureMsg(null);
@@ -180,6 +195,22 @@ export default function Home() {
 
   async function captureSquad() {
     if (busy) return;
+    if (MOCK) {
+      if (!status) return;
+      const next = mockCapture(status);
+      const flags = next.squad.ips
+        .map((ip) => {
+          const p = status.peers.find((pp) => pp.ip === ip);
+          return p ? flag(p.cc) : "";
+        })
+        .filter(Boolean)
+        .join(" ");
+      setCaptureMsg(
+        `Esquadrão salvo: ${next.squad.ips.length} IP(s)${flags ? " " + flags : ""}`,
+      );
+      setStatus(next);
+      return;
+    }
     setBusy(true);
     setErr("");
     setCaptureMsg(null);
@@ -238,6 +269,10 @@ export default function Home() {
 
   async function clearSavedSquad() {
     if (busy) return;
+    if (MOCK) {
+      setStatus((s) => (s ? mockClearSquad(s) : s));
+      return;
+    }
     setBusy(true);
     setErr("");
     setCaptureMsg(null);
@@ -330,10 +365,15 @@ export default function Home() {
       {filterOn && (
         <div className={`solo-frame${squadActive ? " squad" : ""}`} aria-hidden="true" />
       )}
-      <div className="brand">
-        <h1>rdo-solo</h1>
-        <span className="ip">console: {status?.console_label || status?.console_ip || "—"}</span>
-      </div>
+      <button
+        type="button"
+        className="panel-toggle"
+        aria-expanded={panelOpen}
+        aria-controls="panel"
+        onClick={togglePanel}
+      >
+        {panelOpen ? "fechar" : "painel"}
+      </button>
 
       {status?.dropped_at && now - status.dropped_at < 120_000 && (
         <div className="drop">
@@ -342,27 +382,55 @@ export default function Home() {
         </div>
       )}
 
+      <section className="controls">
       <div className={`card ${mode === "solo" ? "solo" : ""} ${squadActive ? "squad" : ""}`}>
-        <button
-          type="button"
-          className={`toggle ${mode === "solo" ? "on" : "off"}`}
-          onClick={toggle}
-          disabled={busy || !status || (gateBlocked && !forced)}
-          aria-pressed={mode === "solo"}
-          aria-label={mode === "solo" ? "Desligar modo solo" : "Ligar modo solo"}
-        >
-          {busy ? "…" : mode === "solo" ? "DESLIGAR MODO SOLO" : "LIGAR MODO SOLO"}
-        </button>
-        <p className="state">
-          <b className={mode === "solo" ? "on" : squadActive ? "squad" : "off"}>
-            {mode === "solo" ? "SOLO ATIVO" : squadActive ? "SQUAD ATIVO" : "SOLO INATIVO"}
-          </b>
-          {mode === "solo" || squadActive ? `há ${uptime}` : "jogando normalmente"}
+        <div className="btns">
+          <button
+            type="button"
+            className={`toggle ${mode === "solo" ? "on" : "off"}`}
+            onClick={toggle}
+            disabled={busy || !status || (gateBlocked && !forced)}
+            aria-pressed={mode === "solo"}
+            aria-label={mode === "solo" ? "Desligar modo solo" : "Ligar modo solo"}
+          >
+            {busy ? "…" : "MODO SOLO"}
+          </button>
+          <button
+            type="button"
+            className={`toggle squad-toggle ${squadActive ? "on" : "off"}`}
+            onClick={toggleSquad}
+            disabled={busy || !status}
+            aria-pressed={squadActive}
+            aria-label={squadActive ? "Desligar modo squad" : "Ligar modo squad"}
+          >
+            {busy ? "…" : "MODO SQUAD"}
+          </button>
+          <button
+            type="button"
+            className="squad-capture"
+            onClick={captureSquad}
+            disabled={busy || mode !== "off"}
+            aria-label="Capturar esquadrão dos peers ativos"
+          >
+            Capturar esquadrão
+          </button>
+        </div>
+        <p className="ctl-meta">
+          {mode === "solo" || squadActive
+            ? `há ${uptime}`
+            : status?.alone_ms != null
+              ? `sozinho ${formatUptime(status.alone_ms)}`
+              : " "}
         </p>
-        {mode === "off" && status?.alone_ms != null && (
-          <p className="alone">
-            Tempo sozinho na sessão: <b>{formatUptime(status.alone_ms)}</b>
+        {captureMsg && (
+          <p className="squad-msg" role="status">
+            {captureMsg}
           </p>
+        )}
+        {emptySquadWarn && (
+          <div className="squad-warn" role="status">
+            Squad vazio: isso expulsa todos os players (só os relays ficam)
+          </div>
         )}
         {gateBlocked && (
           <div className="warn soft">
@@ -375,42 +443,10 @@ export default function Home() {
           </div>
         )}
         {warn && <div className={`warn ${warn.soft ? "soft" : ""}`}>{warn.text}</div>}
-
-        <div className="squad-controls">
-          <button
-            type="button"
-            className={`toggle squad-toggle ${squadActive ? "on" : "off"}`}
-            onClick={toggleSquad}
-            disabled={busy || !status}
-            aria-pressed={squadActive}
-            aria-label={squadActive ? "Desligar modo squad" : "Ligar modo squad"}
-          >
-            {busy ? "…" : squadActive ? "DESLIGAR MODO SQUAD" : "MODO SQUAD"}
-          </button>
-          <button
-            type="button"
-            className="squad-capture"
-            onClick={captureSquad}
-            disabled={busy || mode !== "off"}
-            aria-label="Capturar esquadrão dos peers ativos"
-          >
-            Capturar esquadrão
-          </button>
-          {captureMsg && (
-            <p className="squad-msg" role="status">
-              {captureMsg}
-            </p>
-          )}
-          {emptySquadWarn && (
-            <div className="squad-warn" role="status">
-              Squad vazio: isso expulsa todos os players (só os relays ficam)
-            </div>
-          )}
-        </div>
       </div>
+      </section>
 
-      {!clean && (
-        <>
+      <aside id="panel" className="panel" data-open={panelOpen} aria-label="Informações">
           <div className="card squad-list">
             <div className="squad-list-head">
               <div className="k">Squad salvo</div>
@@ -488,17 +524,15 @@ export default function Home() {
               <span className={`dot ${h?.console_present && !h?.ip_mismatch ? "ok" : ""}`}>console</span>
             </div>
           </div>
-        </>
-      )}
+      </aside>
 
-      <div className="conn">
-        {live ? <span className="live">● ao vivo</span> : <span className="down">● reconectando…</span>}
-        {" · "}
-        <button type="button" className="clean-toggle" onClick={toggleClean}>
-          {clean ? "modo completo" : "modo limpo"}
-        </button>
-        {err && <div className="err">{err}</div>}
-      </div>
+      <div className="panel-backdrop" hidden={!panelOpen} onClick={togglePanel} />
+
+      {err && (
+        <div className="conn">
+          <div className="err">{err}</div>
+        </div>
+      )}
     </main>
   );
 }

@@ -443,3 +443,127 @@ body {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+
+/* ---- responsive layout: controls centered, info as right column / drawer ---- */
+
+.panel-toggle {
+  align-self: flex-end;
+  background: none;
+  border: 1px solid var(--line, #2a2f3a);
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.panel-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ctl-meta {
+  margin: 10px 0 2px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  min-height: 1.2em;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.btns {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* mobile (default): the info panel is a slide-in drawer */
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(88vw, 360px);
+  padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+    calc(16px + env(safe-area-inset-bottom)) 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--card, #11151c);
+  border-left: 1px solid var(--line, #2a2f3a);
+  transform: translateX(100%);
+  visibility: hidden;
+  transition:
+    transform 0.22s ease,
+    visibility 0.22s ease;
+  z-index: 60;
+}
+.panel[data-open="true"] {
+  transform: translateX(0);
+  visibility: visible;
+  box-shadow: -18px 0 44px rgba(0, 0, 0, 0.45);
+}
+.panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    transition: none;
+  }
+}
+
+/* desktop / tablet: two columns, panel becomes a static right column */
+@media (min-width: 900px) {
+  .wrap {
+    max-width: 920px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    column-gap: 24px;
+    row-gap: 18px;
+    align-content: center;
+    align-items: start;
+  }
+  .brand,
+  .drop,
+  .conn {
+    grid-column: 1 / -1;
+  }
+  .controls {
+    grid-column: 1;
+    justify-self: center;
+    align-self: center;
+    width: 100%;
+    max-width: 460px;
+  }
+  .panel {
+    position: static;
+    width: auto;
+    transform: none;
+    visibility: visible;
+    background: transparent;
+    border-left: none;
+    box-shadow: none;
+    padding: 0;
+    overflow: visible;
+    grid-column: 2;
+    z-index: auto;
+  }
+  .panel-toggle {
+    display: none;
+  }
+  .panel-backdrop {
+    display: none;
+  }
+}
