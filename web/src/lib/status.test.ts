@@ -44,6 +44,27 @@ describe("parseStatusJson", () => {
     expect(s.health.forwarding).toBe(false);
     expect(s.health.gateway_pkts).toBe(0);
   });
+
+  it("parses mode and squad from status json", () => {
+    const raw = JSON.stringify({
+      solo: true,
+      mode: "squad",
+      squad: ["1.2.3.4"],
+      squad_captured_at: "2026-09-30T10:00:00Z",
+      console_ip: "192.168.1.250",
+    });
+    const s = parseStatusJson(raw);
+    expect(s.mode).toBe("squad");
+    expect(s.squad.ips).toEqual(["1.2.3.4"]);
+    expect(s.squad.captured_at).toBe("2026-09-30T10:00:00Z");
+  });
+
+  it("defaults mode to off and squad empty when absent", () => {
+    const s = parseStatusJson(JSON.stringify({ solo: false }));
+    expect(s.mode).toBe("off");
+    expect(s.squad.ips).toEqual([]);
+    expect(s.squad.captured_at).toBeNull();
+  });
 });
 
 describe("formatUptime", () => {

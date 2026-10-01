@@ -3,6 +3,15 @@
 //! partial input yields safe defaults rather than throwing, so a hiccup on the
 //! gateway never crashes the panel.
 
+import { isValidIp } from "./squad";
+
+export type Mode = "off" | "solo" | "squad";
+
+export interface SquadInfo {
+  ips: string[];
+  captured_at: string | null;
+}
+
 export interface RouteHealth {
   forwarding: boolean;
   redirects_ok: boolean;
@@ -22,8 +31,9 @@ export interface SoloStatus {
   /** Friendly console name (CONSOLE_LABEL), shown instead of the IP. "" if unset. */
   console_label: string;
   health: RouteHealth;
+  mode: Mode;
+  squad: SquadInfo;
 }
-
 /** Counters the panel tracks itself by tailing the kernel log while solo is on. */
 export interface LiveCounters {
   blocked: number;
@@ -66,6 +76,8 @@ const EMPTY_HEALTH: RouteHealth = {
   ok: false,
 };
 
+const EMPTY_SQUAD: SquadInfo = { ips: [], captured_at: null };
+
 function bool(v: unknown): boolean {
   return v === true;
 }
@@ -74,6 +86,23 @@ function num(v: unknown): number {
 }
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+function parseMode(raw: unknown, solo: boolean): Mode {
+  if (raw === "off" || raw === "solo" || raw === "squad") return raw;
+  return solo ? "solo" : "off";
+}
+
+function parseSquad(obj: Record<string, unknown>): SquadInfo {
+  const raw = obj.squad;
+  const ips = Array.isArray(raw)
+    ? raw.filter((ip): ip is string => typeof ip === "string" && isValidIp(ip))
+    : [];
+  const captured = obj.squad_captured_at;
+  return {
+    ips,
+    captured_at: typeof captured === "string" ? captured : null,
+  };
 }
 
 export function parseStatusJson(raw: string): SoloStatus {
@@ -87,12 +116,15 @@ export function parseStatusJson(raw: string): SoloStatus {
       console_ip: "",
       console_label: "",
       health: { ...EMPTY_HEALTH },
+      mode: "off",
+      squad: { ...EMPTY_SQUAD },
     };
   }
   const h = (obj.health ?? {}) as Record<string, unknown>;
   const since = obj.since_epoch;
+  const solo = bool(obj.solo);
   return {
-    solo: bool(obj.solo),
+    solo,
     since_epoch: typeof since === "number" && Number.isFinite(since) ? since : null,
     console_ip: str(obj.console_ip),
     console_label: str(obj.console_label),
@@ -106,6 +138,8 @@ export function parseStatusJson(raw: string): SoloStatus {
       gateway_pkts: num(h.gateway_pkts),
       ok: bool(h.ok),
     },
+    mode: parseMode(obj.mode, solo),
+    squad: parseSquad(obj),
   };
 }
 
