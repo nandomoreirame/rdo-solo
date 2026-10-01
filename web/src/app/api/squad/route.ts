@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { isAuthed } from "@/lib/authGuard";
-import { monitor } from "@/lib/monitor";
 import { captureSquad, clearSquad, readSquad, readStatus } from "@/lib/rdo";
+import { readSessionPeers } from "@/lib/sessionPeers";
 import { isValidIp } from "@/lib/squad";
 
 export const runtime = "nodejs";
@@ -18,9 +18,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: "capture only in Normal mode" }, { status: 409 });
     }
 
-    const ips = [
-      ...new Set(monitor.snapshot().peers.map((p) => p.ip).filter(isValidIp)),
-    ];
+    // The session peers are published by the RUNNING monitor (server.ts) to the
+    // cross-instance bridge; this route's own monitor instance is never started
+    // and would always report zero. See lib/sessionPeers.ts.
+    const ips = [...new Set(readSessionPeers().filter(isValidIp))];
     // captureSquad rejects empty lists; clearSquad still writes an empty squad.
     if (ips.length === 0) {
       await clearSquad();

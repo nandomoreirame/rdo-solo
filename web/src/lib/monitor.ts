@@ -13,6 +13,7 @@ import { readStatus, toggleSolo } from "./rdo";
 import { parseStatusJson, type PanelStatus, type PanelPeer, type SoloStatus } from "./status";
 import { DropDetector } from "./dropDetector";
 import { notifyDiscord } from "./notify";
+import { publishSessionPeers } from "./sessionPeers";
 
 const execFileP = promisify(execFile);
 
@@ -149,6 +150,7 @@ class SoloMonitor extends EventEmitter {
         this.countersDirty = false;
         this.emit("update", this.snapshot());
       }
+      this.publishPeers();
     }, COUNTER_FLUSH_MS);
   }
 
@@ -202,6 +204,7 @@ class SoloMonitor extends EventEmitter {
       this.firstPlayerAt = null;
     }
     await this.readBlocked();
+    this.publishPeers();
     this.emit("update", this.snapshot());
   }
 
@@ -284,6 +287,15 @@ class SoloMonitor extends EventEmitter {
 
   private prunePeers(now: number): void {
     for (const [ip, p] of this.peers) if (now - p.lastSeen > PEER_TTL_MS) this.peers.delete(ip);
+  }
+
+  /** Publish the current session peer IPs to the cross-instance bridge so the
+   *  Next route handlers (which import a separate, never-started monitor
+   *  instance) can read them. Only the started instance runs the timers/tails
+   *  that call this, so the empty route instance never clobbers the list. */
+  private publishPeers(now = Date.now()): void {
+    this.prunePeers(now);
+    publishSessionPeers([...new Set([...this.peers.values()].map((p) => p.ip))]);
   }
 
   /** Best-effort country lookup via a public GeoIP API (no local mmdb here).
