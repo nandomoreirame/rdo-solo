@@ -32,6 +32,12 @@ export default function Home() {
   useEffect(() => {
     setPanelOpen(readPanelOpen(true));
   }, []);
+  // Auto-dismiss the capture feedback after 4s.
+  useEffect(() => {
+    if (!captureMsg) return;
+    const t = setTimeout(() => setCaptureMsg(null), 4000);
+    return () => clearTimeout(t);
+  }, [captureMsg]);
   const togglePanel = useCallback(() => {
     setPanelOpen((v) => {
       const next = !v;
@@ -206,7 +212,7 @@ export default function Home() {
         .filter(Boolean)
         .join(" ");
       setCaptureMsg(
-        `Esquadrão salvo: ${next.squad.ips.length} IP(s)${flags ? " " + flags : ""}`,
+        `${next.squad.ips.length} IP(s) salvos${flags ? " " + flags : ""}`,
       );
       setStatus(next);
       return;
@@ -243,8 +249,8 @@ export default function Home() {
           .join(" ");
         setCaptureMsg(
           flags
-            ? `Esquadrão salvo: ${count} IP(s) ${flags}`
-            : `Esquadrão salvo: ${count} IP(s)`,
+            ? `${count} IP(s) salvos ${flags}`
+            : `${count} IP(s) salvos`,
         );
         setStatus((prev) =>
           prev
@@ -401,18 +407,9 @@ export default function Home() {
             onClick={toggleSquad}
             disabled={busy || !status}
             aria-pressed={squadActive}
-            aria-label={squadActive ? "Desligar modo squad" : "Ligar modo squad"}
+            aria-label={squadActive ? "Parar de isolar o bando" : "Isolar o bando"}
           >
-            {busy ? "…" : "MODO SQUAD"}
-          </button>
-          <button
-            type="button"
-            className="squad-capture"
-            onClick={captureSquad}
-            disabled={busy || mode !== "off"}
-            aria-label="Capturar esquadrão dos peers ativos"
-          >
-            Capturar esquadrão
+            {busy ? "…" : "ISOLAR BANDO"}
           </button>
         </div>
         <p className="ctl-meta">
@@ -422,14 +419,9 @@ export default function Home() {
               ? `sozinho ${formatUptime(status.alone_ms)}`
               : " "}
         </p>
-        {captureMsg && (
-          <p className="squad-msg" role="status">
-            {captureMsg}
-          </p>
-        )}
         {emptySquadWarn && (
           <div className="squad-warn" role="status">
-            Squad vazio: isso expulsa todos os players (só os relays ficam)
+            Bando vazio: isso expulsa todos os players (só os relays ficam)
           </div>
         )}
         {gateBlocked && (
@@ -449,16 +441,27 @@ export default function Home() {
       <aside id="panel" className="panel" data-open={panelOpen} aria-label="Informações">
           <div className="card squad-list">
             <div className="squad-list-head">
-              <div className="k">Squad salvo</div>
-              <button
-                type="button"
-                className="squad-clear"
-                onClick={clearSavedSquad}
-                disabled={busy || (squad.ips.length === 0 && !squad.captured_at)}
-                aria-label="Limpar esquadrão salvo"
-              >
-                limpar
-              </button>
+              <div className="k">Bando salvo</div>
+              <div className="squad-actions">
+                <button
+                  type="button"
+                  className="squad-capture"
+                  onClick={captureSquad}
+                  disabled={busy || mode !== "off"}
+                  aria-label="Capturar IPs dos peers ativos"
+                >
+                  Capturar IPs
+                </button>
+                <button
+                  type="button"
+                  className="squad-clear"
+                  onClick={clearSavedSquad}
+                  disabled={busy || (squad.ips.length === 0 && !squad.captured_at)}
+                  aria-label="Limpar bando salvo"
+                >
+                  limpar
+                </button>
+              </div>
             </div>
             {capturedLabel && <p className="squad-captured">capturado: {capturedLabel}</p>}
             {squad.ips.length === 0 ? (
@@ -483,6 +486,11 @@ export default function Home() {
                   );
                 })}
               </ul>
+            )}
+            {captureMsg && (
+              <p className="squad-msg" role="status">
+                {captureMsg}
+              </p>
             )}
           </div>
 

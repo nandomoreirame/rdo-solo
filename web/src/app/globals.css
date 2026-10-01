@@ -354,13 +354,19 @@ body {
   color: #eaf2ff;
 }
 
+.squad-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .squad-capture {
-  width: 100%;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 14px 16px;
-  font-size: 15px;
-  font-weight: 700;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
   color: var(--fg);
   background: #0f1318;
   cursor: pointer;
@@ -378,7 +384,9 @@ body {
 }
 
 .squad-msg {
-  margin: 0;
+  margin: 14px 0 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
   text-align: center;
   font-size: 13px;
   color: var(--ok);
