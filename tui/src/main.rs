@@ -34,8 +34,9 @@ use std::time::Duration;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let sub = args.first().map(String::as_str).unwrap_or("tui");
+    let rest: &[String] = args.get(1..).unwrap_or(&[]);
 
-    let code = match run(sub) {
+    let code = match run(sub, rest) {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("error: {e}");
@@ -52,7 +53,19 @@ fn need_root() -> Result<()> {
     Ok(())
 }
 
-fn run(sub: &str) -> Result<()> {
+fn now_iso() -> String {
+    std::process::Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
+}
+
+fn run(sub: &str, args: &[String]) -> Result<()> {
     let cfg = Config::load();
     match sub {
         "tui" => {
@@ -136,6 +149,36 @@ fn run(sub: &str) -> Result<()> {
             println!("ip rule {} removed", config::RULE_PRIO);
             Ok(())
         }
+        "squad-set" => {
+            if args.is_empty() || args.iter().any(|a| !squad::is_valid_ip(a)) {
+                eprintln!("error: squad-set requires one or more valid IPv4 addresses");
+                std::process::exit(2);
+            }
+            squad::write_squad(args, &now_iso())?;
+            Ok(())
+        }
+        "squad-on" => {
+            need_root()?;
+            firewall::cmd_squad_on(&cfg)?;
+            println!("squad ON ({} peers allowlisted)", squad::read_squad().len());
+            Ok(())
+        }
+        "squad-off" => {
+            need_root()?;
+            firewall::cmd_off(&cfg)?;
+            println!("squad OFF (filter cleared)");
+            Ok(())
+        }
+        "squad-list" => {
+            for ip in squad::read_squad() {
+                println!("{ip}");
+            }
+            Ok(())
+        }
+        "squad-clear" => {
+            squad::clear_squad()?;
+            Ok(())
+        }
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -198,7 +241,11 @@ fn print_help() {
          boot                  reaplica no boot (usado pelo systemd)\n\
          install | uninstall   instala/remove o serviço e as regras\n\
          nat-on | nat-off      masquerade do console (fallback)\n\
-         route-fix | route-unfix   ip rule 5200 (escape da tabela 52 do Tailscale)\n"
+         route-fix | route-unfix   ip rule 5200 (escape da tabela 52 do Tailscale)\n\
+         squad-set <ip>...     grava a allowlist do bando (substitui a lista)\n\
+         squad-on | squad-off  liga/desliga o modo bando\n\
+         squad-list            imprime os IPs da allowlist (1 por linha)\n\
+         squad-clear           apaga a allowlist\n"
     );
 }
 
@@ -323,4 +370,16 @@ fn handle_mouse(app: &mut App, m: crossterm::event::MouseEvent) {
 
 fn in_rect(x: u16, y: u16, r: ratatui::layout::Rect) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn squad_set_rejects_when_any_ip_invalid() {
+        use crate::squad::is_valid_ip;
+        let good = ["1.2.3.4", "5.6.7.8"];
+        let bad = ["1.2.3.4", "oops; rm -rf /"];
+        assert!(good.iter().all(|a| is_valid_ip(a)));
+        assert!(!bad.iter().all(|a| is_valid_ip(a)));
+    }
 }
