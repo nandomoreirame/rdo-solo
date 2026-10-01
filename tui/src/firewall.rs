@@ -273,13 +273,11 @@ fn write_state(mode: Mode) -> Result<()> {
 }
 
 pub fn apply_state(cfg: &Config) -> Result<()> {
+    flush_filter();
     match read_state() {
+        Mode::Off => Ok(()),
         Mode::Solo => load_drops(cfg, Mode::Solo),
         Mode::Squad => load_drops(cfg, Mode::Squad),
-        Mode::Off => {
-            flush_filter();
-            Ok(())
-        }
     }
 }
 
@@ -289,14 +287,23 @@ pub fn cmd_on(cfg: &Config) -> Result<()> {
     if !ok("iptables", &["-n", "-L", CHAIN]) {
         install_chains(cfg)?;
     }
-    load_drops(cfg, Mode::Solo)?;
     write_state(Mode::Solo)?;
+    apply_state(cfg)?;
+    Ok(())
+}
+
+pub fn cmd_squad_on(cfg: &Config) -> Result<()> {
+    if !ok("iptables", &["-n", "-L", CHAIN]) {
+        install_chains(cfg)?;
+    }
+    write_state(Mode::Squad)?;
+    apply_state(cfg)?;
     Ok(())
 }
 
 pub fn cmd_off(_cfg: &Config) -> Result<()> {
-    flush_filter();
     write_state(Mode::Off)?;
+    flush_filter();
     Ok(())
 }
 
