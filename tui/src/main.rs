@@ -13,6 +13,7 @@ mod geo;
 mod history;
 mod netlog;
 mod score;
+mod squad;
 
 use anyhow::Result;
 use app::{ui, App};
