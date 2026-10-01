@@ -32,3 +32,8 @@ export function formatSquadList(ips: string[], capturedAt: string): string {
   const clean = ips.filter((ip, i) => isValidIp(ip) && ips.indexOf(ip) === i);
   return `# captured_at=${capturedAt}\n${clean.join("\n")}\n`;
 }
+
+/** The squad list with `ip` removed (exact match), order preserved. */
+export function removeIp(ips: string[], ip: string): string[] {
+  return ips.filter((x) => x !== ip);
+}

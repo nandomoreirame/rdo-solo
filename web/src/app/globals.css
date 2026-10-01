@@ -436,6 +436,36 @@ body {
   cursor: default;
 }
 
+.squad-remove {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-left: 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.squad-remove:hover:not(:disabled) {
+  color: var(--bad);
+  background: rgba(255, 69, 58, 0.12);
+}
+.squad-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.squad-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .squad-captured {
   margin: 6px 0 0;
   font-size: 12px;

@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { formatUptime, soloGate, type PanelStatus } from "@/lib/status";
-import { MOCK, initialMock, mockSetMode, mockCapture, mockClearSquad } from "@/lib/mockStatus";
+import {
+  MOCK,
+  initialMock,
+  mockSetMode,
+  mockCapture,
+  mockClearSquad,
+  mockRemoveSquadIp,
+} from "@/lib/mockStatus";
 import { readPanelOpen, writePanelOpen } from "@/lib/panelState";
 
 type Phase = "loading" | "login" | "ready";
@@ -273,6 +280,42 @@ export default function Home() {
     }
   }
 
+  async function removeSquadIp(ip: string) {
+    if (busy) return;
+    if (MOCK) {
+      setStatus((s) => (s ? mockRemoveSquadIp(s, ip) : s));
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await fetch(`/api/squad?ip=${encodeURIComponent(ip)}`, { method: "DELETE" });
+      if (r.status === 401) {
+        readyRef.current = false;
+        setPhase("login");
+        return;
+      }
+      const j = (await r.json()) as { ok?: boolean; ips?: string[]; error?: string };
+      if (r.ok && j.ok && Array.isArray(j.ips)) {
+        const ips = j.ips;
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                squad: { ips, captured_at: ips.length === 0 ? null : prev.squad.captured_at },
+              }
+            : prev,
+        );
+      } else {
+        setErr(j.error ?? "falha ao remover");
+      }
+    } catch {
+      setErr("erro de conexão");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function clearSavedSquad() {
     if (busy) return;
     if (MOCK) {
@@ -482,6 +525,16 @@ export default function Home() {
                         )}
                       </span>
                       <span className="pip">{ip}</span>
+                      <button
+                        type="button"
+                        className="squad-remove"
+                        onClick={() => removeSquadIp(ip)}
+                        disabled={busy}
+                        aria-label={`Remover ${ip} do bando`}
+                        title="remover do bando"
+                      >
+                        ×
+                      </button>
                     </li>
                   );
                 })}

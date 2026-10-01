@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isValidIp, parseSquadList, formatSquadList } from "./squad";
+import { isValidIp, parseSquadList, formatSquadList, removeIp } from "./squad";
 
 describe("squad helpers", () => {
   it("validates IPv4 and rejects junk/injection", () => {
@@ -18,5 +18,14 @@ describe("squad helpers", () => {
   it("formats roundtrip", () => {
     const body = formatSquadList(["1.2.3.4"], "2026-09-30T10:00:00Z");
     expect(parseSquadList(body).ips).toEqual(["1.2.3.4"]);
+  });
+  it("removes an ip by exact match, preserving order", () => {
+    expect(removeIp(["1.2.3.4", "5.6.7.8", "9.9.9.9"], "5.6.7.8")).toEqual([
+      "1.2.3.4",
+      "9.9.9.9",
+    ]);
+  });
+  it("is a no-op when the ip is absent", () => {
+    expect(removeIp(["1.2.3.4"], "5.6.7.8")).toEqual(["1.2.3.4"]);
   });
 });

@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { isAuthed } from "@/lib/authGuard";
 import { captureSquad, clearSquad, readSquad, readStatus } from "@/lib/rdo";
 import { readSessionPeers } from "@/lib/sessionPeers";
-import { isValidIp } from "@/lib/squad";
+import { isValidIp, removeIp } from "@/lib/squad";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,9 +57,25 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: "não autenticado" }, { status: 401 });
   }
 
+  const ip = req.nextUrl.searchParams.get("ip");
+  if (ip !== null && !isValidIp(ip)) {
+    return NextResponse.json({ ok: false, error: "IP inválido" }, { status: 400 });
+  }
+
   try {
-    await clearSquad();
-    return NextResponse.json({ ok: true });
+    // No ip → clear the whole squad (original behavior). With a valid ip →
+    // remove just that one: re-set the remaining list, or clear if it empties.
+    if (ip === null) {
+      await clearSquad();
+      return NextResponse.json({ ok: true, ips: [] });
+    }
+    const remaining = removeIp(await readSquad(), ip);
+    if (remaining.length === 0) {
+      await clearSquad();
+    } else {
+      await captureSquad(remaining);
+    }
+    return NextResponse.json({ ok: true, ips: remaining });
   } catch {
     return NextResponse.json(
       { ok: false, error: "falha ao executar no gateway" },

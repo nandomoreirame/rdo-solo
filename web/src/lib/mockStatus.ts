@@ -66,3 +66,11 @@ export function mockCapture(s: PanelStatus): PanelStatus {
 export function mockClearSquad(s: PanelStatus): PanelStatus {
   return { ...s, squad: { ips: [], captured_at: null } };
 }
+
+export function mockRemoveSquadIp(s: PanelStatus, ip: string): PanelStatus {
+  const ips = s.squad.ips.filter((x) => x !== ip);
+  return {
+    ...s,
+    squad: { ips, captured_at: ips.length === 0 ? null : s.squad.captured_at },
+  };
+}
