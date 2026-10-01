@@ -1,10 +1,10 @@
 ---
 feature: squad-mode
-phase: plan-complete
+phase: implement-complete
 spec_path: docs/specs/squad-mode/SPEC.md
 plan_path: docs/plans/2026-09-30-squad-mode.md
 started_at: "2026-09-30"
-updated_at: "2026-09-30"
+updated_at: "2026-10-01"
 current_section: ""
 language: pt-BR
 decisions:
@@ -21,4 +21,6 @@ transitions:
   - "2026-09-30: research started"
   - "2026-09-30: architecture mapped; discovered prior removed whitelist (posse) + host/relay trap"
   - "2026-09-30: spec approved and saved; direction = corrected squad allowlist + live validation; proceeding to plan"
+  - "2026-10-01: implemented tasks 1-12 via CLI pipeline (Grok impl, Claude review/gate/commit; Codex out of quota). All gates green: Rust 41 tests + clippy/fmt; web 41 tests + tsc + next build; shell shellcheck."
+  - "PENDING: Task 13 (REQ-011 live validation) — needs a real RDO session with 1 friend + deploy to the homelab (rebuild rdo-solo-tui musl + web container, install shell). NOT done autonomously."
 ---
