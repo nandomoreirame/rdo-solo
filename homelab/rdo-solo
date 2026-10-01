@@ -19,14 +19,15 @@
 # needed. That also means ICMP redirects MUST stay off, otherwise the kernel tells
 # the console to bypass this host and the filter is silently skipped.
 #
-# Usage: rdo-solo {install|on|off|watch|blocked|status|route-fix|route-unfix
-#                  |nat-on|nat-off|boot|uninstall}
+# Usage: rdo-solo {install|on|off|squad-set|squad-on|squad-off|squad-list|squad-clear
+#                  |watch|blocked|status|route-fix|route-unfix|nat-on|nat-off|boot|uninstall}
 
 set -eo pipefail
 
 CONF=/etc/rdo-solo.conf
 STATE_DIR=/var/lib/rdo-solo
 STATE_FILE="$STATE_DIR/state"
+SQUAD_FILE="$STATE_DIR/squad.list"
 UNIT=/etc/systemd/system/rdo-solo.service
 SYSCTL_FILE=/etc/sysctl.d/99-rdo-solo.conf
 SELF=/usr/local/bin/rdo-solo
@@ -38,6 +39,9 @@ GAME_PORTS_RANGE=61455:61458
 CHAIN=RDO_SOLO
 LOG_CHAIN=RDO_LOGDROP
 NAT_CHAIN=RDO_NAT
+# Rockstar service ranges (RSONET). Always ACCEPT-ed in squad mode so the
+# session host/relays survive. Mirror of tui/src/squad.rs RSONET_NETS.
+RSONET_NETS=(192.81.240.0/21 199.46.32.0/19 104.255.104.0/21)
 # Rockstar's NA online network (RSONET-NA1, 192.81.240.0/21). These relays knock
 # constantly and are STILL blocked; this pattern only hides them from the log so
 # what shows is real players. Extend in /etc/rdo-solo.conf if needed.
@@ -54,6 +58,41 @@ die() { echo "error: $*" >&2; exit 1; }
 info() { echo "  $*"; }
 
 need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"; }
+
+# Well-formed IPv4 only (each octet 0-255). Rejects junk and argv-injection bait.
+is_valid_ip() {
+  local ip="$1"
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}" c="${BASH_REMATCH[3]}" d="${BASH_REMATCH[4]}"
+  ((a <= 255 && b <= 255 && c <= 255 && d <= 255)) || return 1
+  return 0
+}
+
+# Valid, deduped IPs from $SQUAD_FILE (skip #/blank). Missing file → empty.
+read_squad() {
+  [ -r "$SQUAD_FILE" ] || return 0
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    [[ "$line" == \#* ]] && continue
+    is_valid_ip "$line" || continue
+    printf '%s\n' "$line"
+  done < "$SQUAD_FILE" | awk '!seen[$0]++'
+}
+
+# Normalize state file body: legacy "on" → solo. Anything else unknown → off.
+read_mode() {
+  local raw
+  raw="$(cat "$STATE_FILE" 2>/dev/null || echo off)"
+  raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  case "$raw" in
+    squad) echo squad ;;
+    solo|on) echo solo ;;
+    *) echo off ;;
+  esac
+}
 
 # Docker sets the FORWARD policy to DROP and jumps to DOCKER-USER first, so that
 # chain is the correct place to hook: it survives docker restarts and an ACCEPT
@@ -137,9 +176,27 @@ blocked_players() {
 # Drop the game's P2P ports in both directions and on both source and destination
 # port, because the console uses these as its local ports and peers use them as
 # theirs. Server traffic (TCP 80/443) is untouched, so the game stays online.
+#
+# Mode: solo = port drops only; squad = ACCEPT squad IPs + RSONET, then port drops;
+# off is handled by apply_state (empty chain).
 load_drops() {
+  local mode="${1:-solo}"
   iptables -F "$CHAIN"
   ensure_logdrop
+
+  if [ "$mode" = squad ]; then
+    local ip net
+    while IFS= read -r ip; do
+      [ -n "$ip" ] || continue
+      iptables -A "$CHAIN" -s "$ip" -j ACCEPT
+      iptables -A "$CHAIN" -d "$ip" -j ACCEPT
+    done < <(read_squad)
+    for net in "${RSONET_NETS[@]}"; do
+      iptables -A "$CHAIN" -s "$net" -j ACCEPT
+      iptables -A "$CHAIN" -d "$net" -j ACCEPT
+    done
+  fi
+
   local side port
   for side in -s -d; do
     for port in --sport --dport; do
@@ -150,8 +207,12 @@ load_drops() {
 }
 
 apply_state() {
-  local want; want="$(cat "$STATE_FILE" 2>/dev/null || echo off)"
-  if [ "$want" = "on" ]; then load_drops; else iptables -F "$CHAIN" 2>/dev/null || true; fi
+  local want
+  want="$(read_mode)"
+  case "$want" in
+    solo|squad) load_drops "$want" ;;
+    *) iptables -F "$CHAIN" 2>/dev/null || true ;;
+  esac
 }
 
 # --- live monitor ------------------------------------------------------------
@@ -291,17 +352,48 @@ EOF
 cmd_on() {
   need_root
   iptables -n -L "$CHAIN" >/dev/null 2>&1 || install_chains
-  load_drops
-  echo on > "$STATE_FILE"
+  echo solo > "$STATE_FILE"
+  apply_state
   echo "solo filter ON for $CONSOLE_IP (udp $GAME_PORTS_SINGLE, $GAME_PORTS_RANGE)"
   echo "  para jogar em bando, use 'rdo-solo off' (missões/séries já são privadas do bando)"
 }
 
+cmd_squad_on() {
+  need_root
+  iptables -n -L "$CHAIN" >/dev/null 2>&1 || install_chains
+  echo squad > "$STATE_FILE"
+  apply_state
+  echo "squad filter ON for $CONSOLE_IP (allowlist + RSONET, then udp drops)"
+}
+
 cmd_off() {
   need_root
-  iptables -F "$CHAIN" 2>/dev/null || true
   echo off > "$STATE_FILE"
-  echo "solo filter OFF (console plays normally)"
+  iptables -F "$CHAIN" 2>/dev/null || true
+  echo "filter OFF (console plays normally)"
+}
+
+cmd_squad_set() {
+  need_root
+  local ip
+  for ip in "$@"; do
+    is_valid_ip "$ip" || { echo "error: invalid IP: $ip" >&2; exit 2; }
+  done
+  [ "$#" -ge 1 ] || { echo "error: squad-set needs >=1 IP" >&2; exit 2; }
+  mkdir -p "$STATE_DIR"
+  {
+    echo "# captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "$@"
+  } > "$SQUAD_FILE"
+}
+
+cmd_squad_list() {
+  read_squad
+}
+
+cmd_squad_clear() {
+  need_root
+  rm -f "$SQUAD_FILE"
 }
 
 # NAT is persisted here too: the modem (Vivo Box) drops the console's
@@ -379,6 +471,11 @@ case "${1:-}" in
   install)     cmd_install ;;
   on)          cmd_on ;;
   off)         cmd_off ;;
+  squad-set)   shift; cmd_squad_set "$@" ;;
+  squad-on)    cmd_squad_on ;;
+  squad-off)   cmd_off ;;
+  squad-list)  cmd_squad_list ;;
+  squad-clear) cmd_squad_clear ;;
   status)      cmd_status ;;
   watch)       cmd_watch "$2" "$3" ;;
   blocked)     need_root; echo "players bloqueados nos ultimos ${2:-300}s (relays da Rockstar ocultos):"; blocked_players "${2:-300}" | while read -r n ip; do printf '  %-16s %s pacotes\n' "$ip" "$n"; done ;;
@@ -388,5 +485,5 @@ case "${1:-}" in
   nat-off)     cmd_nat_off ;;
   boot)        cmd_boot ;;
   uninstall)   cmd_uninstall ;;
-  *) echo "usage: $(basename "$0") {install|on|off|watch|blocked|status|route-fix|route-unfix|nat-on|nat-off|boot|uninstall}" >&2; exit 2 ;;
+  *) echo "usage: $(basename "$0") {install|on|off|squad-set|squad-on|squad-off|squad-list|squad-clear|watch|blocked|status|route-fix|route-unfix|nat-on|nat-off|boot|uninstall}" >&2; exit 2 ;;
 esac
