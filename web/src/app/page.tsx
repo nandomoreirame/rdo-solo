@@ -26,6 +26,7 @@ export default function Home() {
   const [now, setNow] = useState(() => Date.now());
   const [forced, setForced] = useState(false);
   const [clean, setClean] = useState(false);
+  const [captureMsg, setCaptureMsg] = useState<string | null>(null);
   useEffect(() => {
     try {
       setClean(localStorage.getItem("rdo_clean") === "1");
@@ -134,11 +135,11 @@ export default function Home() {
     }
   }
 
-  async function toggle() {
+  async function postSoloAction(action: "on" | "off" | "squad") {
     if (!status || busy) return;
     setBusy(true);
     setErr("");
-    const action = status.solo ? "off" : "on";
+    setCaptureMsg(null);
     try {
       const r = await fetch("/api/solo", {
         method: "POST",
@@ -158,6 +159,102 @@ export default function Home() {
         setPhase("login");
       } else {
         setErr(j.error ?? "falha ao executar");
+      }
+    } catch {
+      setErr("erro de conexão");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggle() {
+    if (!status) return;
+    const current = status.mode ?? "off";
+    await postSoloAction(current === "solo" ? "off" : "on");
+  }
+
+  async function toggleSquad() {
+    const current = status?.mode ?? "off";
+    await postSoloAction(current === "squad" ? "off" : "squad");
+  }
+
+  async function captureSquad() {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    setCaptureMsg(null);
+    try {
+      const r = await fetch("/api/squad", { method: "POST" });
+      if (r.status === 409) {
+        setCaptureMsg("Capture só no modo Normal");
+        return;
+      }
+      if (r.status === 401) {
+        readyRef.current = false;
+        setPhase("login");
+        return;
+      }
+      const j = (await r.json()) as {
+        ips?: string[];
+        count?: number;
+        ok?: boolean;
+        error?: string;
+      };
+      if (r.ok && Array.isArray(j.ips)) {
+        const ips = j.ips as string[];
+        const count = typeof j.count === "number" ? j.count : ips.length;
+        const flags = ips
+          .map((ip) => {
+            const peer = status?.peers?.find((p) => p.ip === ip);
+            return peer ? flag(peer.cc) : "";
+          })
+          .filter(Boolean)
+          .join(" ");
+        setCaptureMsg(
+          flags
+            ? `Esquadrão salvo: ${count} IP(s) ${flags}`
+            : `Esquadrão salvo: ${count} IP(s)`,
+        );
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                squad: {
+                  ips,
+                  captured_at: new Date().toISOString(),
+                },
+              }
+            : prev,
+        );
+      } else {
+        setErr(j.error ?? "falha ao capturar");
+      }
+    } catch {
+      setErr("erro de conexão");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearSavedSquad() {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    setCaptureMsg(null);
+    try {
+      const r = await fetch("/api/squad", { method: "DELETE" });
+      if (r.status === 401) {
+        readyRef.current = false;
+        setPhase("login");
+        return;
+      }
+      const j = (await r.json()) as { ok?: boolean; error?: string };
+      if (r.ok && j.ok) {
+        setStatus((prev) =>
+          prev ? { ...prev, squad: { ips: [], captured_at: null } } : prev,
+        );
+      } else {
+        setErr(j.error ?? "falha ao limpar");
       }
     } catch {
       setErr("erro de conexão");
@@ -201,23 +298,38 @@ export default function Home() {
     );
   }
 
-  const solo = !!status?.solo;
+  const mode = status?.mode ?? "off";
+  const squad = status?.squad ?? { ips: [], captured_at: null };
   const h = status?.health;
   const gate = soloGate(status);
-  const gateBlocked = !solo && gate.blocked;
+  const gateBlocked = mode === "off" && gate.blocked;
   const peers = status?.peers ?? [];
+  const peerByIp = new Map(peers.map((p) => [p.ip, p]));
+  const squadActive = mode === "squad";
+  const filterOn = mode !== "off";
+  const emptySquadWarn = squadActive && squad.ips.length === 0;
   const uptime =
-    solo && status?.since_epoch ? formatUptime(now - status.since_epoch * 1000) : "—";
+    filterOn && status?.since_epoch
+      ? formatUptime(now - status.since_epoch * 1000)
+      : "—";
+  const capturedLabel = squad.captured_at
+    ? (() => {
+        const t = Date.parse(squad.captured_at);
+        return Number.isFinite(t) ? new Date(t).toLocaleString() : squad.captured_at;
+      })()
+    : null;
 
   let warn: { text: string; soft?: boolean } | null = null;
   if (h?.ip_mismatch) warn = { text: "⚠ console está em outro IP — o filtro mira outro endereço" };
-  else if (solo && h?.console_present && h.gateway_pkts === 0)
+  else if (filterOn && h?.console_present && h.gateway_pkts === 0)
     warn = { text: "⚠ o console não passa pelo gateway (bloqueio sem efeito)" };
   else if (h?.console_ipv6) warn = { text: "⚠ Xbox com IPv6 — o filtro não cobre IPv6", soft: true };
 
   return (
     <main className="wrap">
-      {solo && <div className="solo-frame" aria-hidden="true" />}
+      {filterOn && (
+        <div className={`solo-frame${squadActive ? " squad" : ""}`} aria-hidden="true" />
+      )}
       <div className="brand">
         <h1>rdo-solo</h1>
         <span className="ip">console: {status?.console_label || status?.console_ip || "—"}</span>
@@ -226,23 +338,28 @@ export default function Home() {
       {status?.dropped_at && now - status.dropped_at < 120_000 && (
         <div className="drop">
           ⚠ SESSÃO CAIU há {formatUptime(now - status.dropped_at)}
-          {!solo && " — solo desligado, pode reconectar"}
+          {mode === "off" && " — filtro desligado, pode reconectar"}
         </div>
       )}
 
-      <div className={`card ${solo ? "solo" : ""}`}>
+      <div className={`card ${mode === "solo" ? "solo" : ""} ${squadActive ? "squad" : ""}`}>
         <button
-          className={`toggle ${solo ? "on" : "off"}`}
+          type="button"
+          className={`toggle ${mode === "solo" ? "on" : "off"}`}
           onClick={toggle}
           disabled={busy || !status || (gateBlocked && !forced)}
+          aria-pressed={mode === "solo"}
+          aria-label={mode === "solo" ? "Desligar modo solo" : "Ligar modo solo"}
         >
-          {busy ? "…" : solo ? "DESLIGAR MODO SOLO" : "LIGAR MODO SOLO"}
+          {busy ? "…" : mode === "solo" ? "DESLIGAR MODO SOLO" : "LIGAR MODO SOLO"}
         </button>
         <p className="state">
-          <b className={solo ? "on" : "off"}>{solo ? "SOLO ATIVO" : "SOLO INATIVO"}</b>
-          {solo ? `há ${uptime}` : "jogando normalmente"}
+          <b className={mode === "solo" ? "on" : squadActive ? "squad" : "off"}>
+            {mode === "solo" ? "SOLO ATIVO" : squadActive ? "SQUAD ATIVO" : "SOLO INATIVO"}
+          </b>
+          {mode === "solo" || squadActive ? `há ${uptime}` : "jogando normalmente"}
         </p>
-        {!solo && status?.alone_ms != null && (
+        {mode === "off" && status?.alone_ms != null && (
           <p className="alone">
             Tempo sozinho na sessão: <b>{formatUptime(status.alone_ms)}</b>
           </p>
@@ -258,10 +375,81 @@ export default function Home() {
           </div>
         )}
         {warn && <div className={`warn ${warn.soft ? "soft" : ""}`}>{warn.text}</div>}
+
+        <div className="squad-controls">
+          <button
+            type="button"
+            className={`toggle squad-toggle ${squadActive ? "on" : "off"}`}
+            onClick={toggleSquad}
+            disabled={busy || !status}
+            aria-pressed={squadActive}
+            aria-label={squadActive ? "Desligar modo squad" : "Ligar modo squad"}
+          >
+            {busy ? "…" : squadActive ? "DESLIGAR MODO SQUAD" : "MODO SQUAD"}
+          </button>
+          <button
+            type="button"
+            className="squad-capture"
+            onClick={captureSquad}
+            disabled={busy || mode !== "off"}
+            aria-label="Capturar esquadrão dos peers ativos"
+          >
+            Capturar esquadrão
+          </button>
+          {captureMsg && (
+            <p className="squad-msg" role="status">
+              {captureMsg}
+            </p>
+          )}
+          {emptySquadWarn && (
+            <div className="squad-warn" role="status">
+              Squad vazio: isso expulsa todos os players (só os relays ficam)
+            </div>
+          )}
+        </div>
       </div>
 
       {!clean && (
         <>
+          <div className="card squad-list">
+            <div className="squad-list-head">
+              <div className="k">Squad salvo</div>
+              <button
+                type="button"
+                className="squad-clear"
+                onClick={clearSavedSquad}
+                disabled={busy || (squad.ips.length === 0 && !squad.captured_at)}
+                aria-label="Limpar esquadrão salvo"
+              >
+                limpar
+              </button>
+            </div>
+            {capturedLabel && <p className="squad-captured">capturado: {capturedLabel}</p>}
+            {squad.ips.length === 0 ? (
+              <p className="squad-empty">nenhum IP salvo</p>
+            ) : (
+              <ul className="peerlist">
+                {squad.ips.map((ip) => {
+                  const peer = peerByIp.get(ip);
+                  return (
+                    <li key={ip}>
+                      <span className="pc">
+                        {peer ? (
+                          <>
+                            {flag(peer.cc)} {peer.country || "país desconhecido"}
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </span>
+                      <span className="pip">{ip}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+
           <div className="grid">
             <div className="metric">
               <div className="k">bloqueios</div>
@@ -275,7 +463,9 @@ export default function Home() {
 
           {peers.length > 0 && (
             <div className="card">
-              <div className="k">{solo ? "tentando entrar (bloqueados)" : "na sua sessão"}</div>
+              <div className="k">
+                {filterOn ? "tentando entrar (bloqueados)" : "na sua sessão"}
+              </div>
               <ul className="peerlist">
                 {peers.slice(0, 10).map((p) => (
                   <li key={p.ip}>

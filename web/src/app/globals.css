@@ -321,3 +321,125 @@ body {
     inset 0 0 0 1px rgba(255, 140, 0, 0.35),
     inset 0 0 26px rgba(255, 140, 0, 0.12);
 }
+.solo-frame.squad {
+  border-color: var(--accent);
+  box-shadow:
+    inset 0 0 0 1px rgba(47, 123, 255, 0.35),
+    inset 0 0 26px rgba(47, 123, 255, 0.12);
+}
+
+.card.squad {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.state b.squad {
+  color: var(--accent);
+}
+
+.squad-controls {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toggle.squad-toggle {
+  padding: 18px 16px;
+  font-size: 16px;
+  border-radius: 14px;
+}
+.toggle.squad-toggle.on {
+  background: linear-gradient(180deg, #5a9bff, var(--accent));
+  color: #eaf2ff;
+}
+
+.squad-capture {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg);
+  background: #0f1318;
+  cursor: pointer;
+}
+.squad-capture:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.squad-capture:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.squad-capture:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.squad-msg {
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ok);
+}
+
+.squad-warn {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 140, 0, 0.12);
+  border: 1px solid rgba(255, 140, 0, 0.4);
+  color: #ffd39b;
+  font-size: 13px;
+}
+
+.squad-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.squad-list-head .k {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.squad-clear {
+  background: none;
+  border: none;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 0;
+}
+.squad-clear:hover:not(:disabled) {
+  color: var(--bad);
+}
+.squad-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.squad-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.squad-captured {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.squad-empty {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
