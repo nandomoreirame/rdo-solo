@@ -49,7 +49,7 @@ export function getConfig(): AppConfig {
     blockTag: process.env.RDO_BLOCK_TAG ?? "RDO_BLOCK",
     discordWebhook: process.env.RDO_DISCORD_WEBHOOK ?? "",
     autoOff: (process.env.RDO_AUTO_OFF ?? "1") !== "0",
-    dropSilenceMs: (Number(process.env.RDO_DROP_SILENCE_SECS ?? "20") || 20) * 1000,
+    dropSilenceMs: (Number(process.env.RDO_DROP_SILENCE_SECS ?? "45") || 45) * 1000,
     dropConfirmMs: (Number(process.env.RDO_DROP_CONFIRM_SECS ?? "8") || 8) * 1000,
   };
   return cached;

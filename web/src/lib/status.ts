@@ -30,11 +30,29 @@ export interface LiveCounters {
   unique_ips: number;
 }
 
+/** One peer seen on the console's P2P ports: a session player (solo off) or a
+ *  blocked intruder (solo on). Rockstar's own relays are excluded upstream. */
+export interface PanelPeer {
+  ip: string;
+  /** Packets seen from/to this peer since the current solo state began. */
+  count: number;
+  /** Country name from GeoIP, or "" if unknown. */
+  country: string;
+  /** ISO country code from GeoIP, or "". */
+  cc: string;
+  /** Epoch ms this peer was last seen. */
+  last_seen: number;
+}
+
 export interface PanelStatus extends SoloStatus, LiveCounters {
   /** Epoch ms of the last detected session drop, or null. */
   dropped_at: number | null;
   /** True when the console is in an RDO session now (sustained RSONET traffic). */
   session_active: boolean;
+  /** Session players / blocked intruders, most-recent first. */
+  peers: PanelPeer[];
+  /** Ms alone in the session since solo went off (frozen when a player joins), or null. */
+  alone_ms: number | null;
 }
 
 const EMPTY_HEALTH: RouteHealth = {
