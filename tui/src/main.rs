@@ -98,7 +98,7 @@ fn run(sub: &str) -> Result<()> {
             firewall::cmd_install(&cfg)?;
             println!(
                 "install done. filter is currently: {}",
-                firewall::read_state()
+                firewall::read_state().as_str()
             );
             Ok(())
         }
@@ -152,8 +152,9 @@ fn run(sub: &str) -> Result<()> {
 /// hand (no serde) to keep the static musl binary small; every value is a bool,
 /// an integer, or an IP string with no characters that need escaping.
 fn print_status_json(cfg: &Config) {
-    let state = firewall::read_state();
-    let solo = state == "on";
+    let mode = firewall::read_state();
+    let solo = mode == crate::squad::Mode::Solo;
+    let state = mode.as_str();
     let h = firewall::health(cfg);
     let since = std::fs::metadata(config::STATE_FILE)
         .and_then(|m| m.modified())

@@ -190,7 +190,7 @@ pub struct App {
 impl App {
     pub fn new(cfg: Config) -> Self {
         let log = NetLog::spawn(&cfg);
-        let solo_on = firewall::read_state() == "on";
+        let solo_on = firewall::read_state() == crate::squad::Mode::Solo;
         let status = firewall::status_lines(&cfg);
         let health = firewall::health(&cfg);
         App {
@@ -348,7 +348,7 @@ impl App {
             self.status = firewall::status_lines(&self.cfg);
             self.health = firewall::health(&self.cfg);
             let was = self.solo_on;
-            let on = firewall::read_state() == "on";
+            let on = firewall::read_state() == crate::squad::Mode::Solo;
             // Catch a solo toggle done from outside the TUI (another terminal),
             // so the fill timer still starts/clears on the transition.
             if on && !was {

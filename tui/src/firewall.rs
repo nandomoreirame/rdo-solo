@@ -6,8 +6,10 @@
 //! send_redirects=0, and the log-then-drop chain.
 
 use crate::config::*;
+use crate::squad::Mode;
 use anyhow::{Context, Result};
 use std::fs;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Run a command, returning Ok(()) only on success. `ignore_fail` swallows a
@@ -219,23 +221,36 @@ fn flush_filter() {
     let _ = run("iptables", &["-F", CHAIN], true);
 }
 
-pub fn read_state() -> String {
-    fs::read_to_string(STATE_FILE)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "off".to_string())
+pub fn read_state_at(path: &Path) -> Mode {
+    fs::read_to_string(path)
+        .map(|s| Mode::parse(&s))
+        .unwrap_or(Mode::Off)
 }
 
-fn write_state(v: &str) -> Result<()> {
-    fs::create_dir_all(STATE_DIR).ok();
-    fs::write(STATE_FILE, format!("{v}\n")).context("writing state file")
+pub fn write_state_at(path: &Path, mode: Mode) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(path, format!("{}\n", mode.as_str())).context("writing state file")
+}
+
+pub fn read_state() -> Mode {
+    read_state_at(Path::new(STATE_FILE))
+}
+
+fn write_state(mode: Mode) -> Result<()> {
+    write_state_at(Path::new(STATE_FILE), mode)
 }
 
 pub fn apply_state(cfg: &Config) -> Result<()> {
-    if read_state() == "on" {
-        load_drops(cfg)
-    } else {
-        flush_filter();
-        Ok(())
+    match read_state() {
+        Mode::Solo => load_drops(cfg),
+        // Task 4: squad allowlist drops. Until then, same full drop as solo.
+        Mode::Squad => load_drops(cfg),
+        Mode::Off => {
+            flush_filter();
+            Ok(())
+        }
     }
 }
 
@@ -246,13 +261,13 @@ pub fn cmd_on(cfg: &Config) -> Result<()> {
         install_chains(cfg)?;
     }
     load_drops(cfg)?;
-    write_state("on")?;
+    write_state(Mode::Solo)?;
     Ok(())
 }
 
 pub fn cmd_off(_cfg: &Config) -> Result<()> {
     flush_filter();
-    write_state("off")?;
+    write_state(Mode::Off)?;
     Ok(())
 }
 
@@ -330,8 +345,8 @@ pub fn cmd_install(cfg: &Config) -> Result<()> {
     }
 
     fs::create_dir_all(STATE_DIR).ok();
-    if !std::path::Path::new(STATE_FILE).exists() {
-        write_state("off")?;
+    if !Path::new(STATE_FILE).exists() {
+        write_state(Mode::Off)?;
     }
 
     if !std::path::Path::new(CONF_PATH).exists() {
@@ -550,7 +565,7 @@ pub fn parse_accept_pkts(table: &str, console_ip: &str) -> u64 {
 pub fn status_lines(cfg: &Config) -> Vec<String> {
     let hook = hook_chain();
     let mut out = Vec::new();
-    out.push(format!("estado:     {}", read_state()));
+    out.push(format!("estado:     {}", read_state().as_str()));
     out.push(format!("console:    {}", cfg.console_ip));
     out.push(format!("interface:  {}   hook: {hook}", cfg.wan_if));
     out.push(String::new());
@@ -599,7 +614,31 @@ pub fn status_lines(cfg: &Config) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{neigh_has_global_v6_for_mac, parse_accept_pkts, parse_neigh_ipv4_for_mac};
+    use super::{
+        neigh_has_global_v6_for_mac, parse_accept_pkts, parse_neigh_ipv4_for_mac, read_state_at,
+        write_state_at,
+    };
+    use crate::squad::Mode;
+
+    #[test]
+    fn state_file_roundtrips_mode_and_legacy_on() {
+        assert_eq!(Mode::parse("on"), Mode::Solo); // legacy content
+        assert_eq!(Mode::parse("squad"), Mode::Squad);
+        assert_eq!(Mode::Squad.as_str(), "squad");
+
+        let p = std::env::temp_dir().join(format!("rdo_state_test_{}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        write_state_at(&p, Mode::Squad).unwrap();
+        assert_eq!(read_state_at(&p), Mode::Squad);
+
+        // Legacy "on" body must read as Solo.
+        std::fs::write(&p, "on\n").unwrap();
+        assert_eq!(read_state_at(&p), Mode::Solo);
+
+        // Absent file defaults to Off.
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(read_state_at(&p), Mode::Off);
+    }
 
     #[test]
     fn finds_live_ipv4_by_mac() {
