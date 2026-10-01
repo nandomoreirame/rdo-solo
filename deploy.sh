@@ -76,12 +76,18 @@ ensure_ssh() {
   # Tailscale SSH can require an "additional check" that prints an auth URL and
   # blocks; cap the non-interactive probe so we fall through to the interactive
   # path instead of hanging forever.
-  step "conectando ao homelab ($HOST) — aguarde ~10s (pode exigir auth do Tailscale)..."
-  if timeout 12 ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" true 2>/dev/null; then ok "SSH ok"; return 0; fi
+  step "conectando ao homelab ($HOST)..."
+  # -T: the host's ssh config forces RequestTTY; without -T a non-interactive probe
+  # allocates a PTY, goes raw-mode in an interactive terminal, swallows Ctrl+C and hangs.
+  if timeout 12 ssh -T "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" true 2>/dev/null; then ok "SSH ok"; return 0; fi
   [ -t 1 ] || die "sem SSH para $HOST e sem terminal para autenticar. Rode 'ssh $HOST' primeiro."
-  warn "autenticando em $HOST — o Tailscale SSH vai imprimir uma URL ABAIXO; abra no navegador e aprove."
-  ssh -tt "${SSH_OPTS[@]}" -o ConnectTimeout=20 "$HOST" true </dev/tty || true
-  timeout 12 ssh "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" true 2>/dev/null \
+  warn "O Tailscale SSH precisa de aprovação. Uma URL vai aparecer ABAIXO — abra no navegador e aprove."
+  warn "(se precisar cancelar: Ctrl+C funciona; esta conexão NÃO aloca PTY)"
+  # No -tt / no </dev/tty on purpose: a forced PTY puts the terminal in raw mode and
+  # swallows Ctrl+C. A plain ssh prints the Tailscale auth URL, waits for the browser
+  # approval, then exits — and stays interruptible.
+  ssh -T "${SSH_OPTS[@]}" -o ConnectTimeout=30 "$HOST" true || true
+  timeout 12 ssh -T "${SSH_OPTS[@]}" -o BatchMode=yes "$HOST" true 2>/dev/null \
     || die "ainda não alcanço $HOST por SSH. Aprove a URL do Tailscale e tente 'ssh $HOST' manualmente."
 }
 
@@ -108,6 +114,14 @@ build_rust() {
 
 # --- gateway deploy (binary + shell + service) -------------------------------
 deploy_gateway() {
+  # Guard against a stale build (cargo sometimes keeps an outdated artifact): the
+  # binary MUST understand the squad subcommands before we ship it. squad-list is
+  # read-only and needs no root — stale binaries exit non-zero ("unknown command").
+  if [ "$DRY_RUN" != yes ]; then
+    [ -x "$MUSL_BIN" ] || die "binário ausente em $MUSL_BIN — rode sem --skip-build."
+    "$MUSL_BIN" squad-list >/dev/null 2>&1 \
+      || die "o binário em target/ NÃO tem os subcomandos squad (build stale). Rode 'cd tui && touch src/main.rs && cargo build --release' e tente de novo (sem --skip-build)."
+  fi
   step "enviando binário + shell para $HOST:/tmp"
   run scp "${SSH_OPTS[@]}" "$MUSL_BIN" "$HOST:/tmp/rdo-solo-tui.new"
   run scp "${SSH_OPTS[@]}" "$REPO/homelab/rdo-solo" "$HOST:/tmp/rdo-solo.new"
@@ -132,7 +146,7 @@ echo 'service:' && systemctl is-active $SERVICE || true"
 deploy_web() {
   step "verificando o .env remoto (segredos ficam no homelab, nunca aqui)"
   # shellcheck disable=SC2029  # $REMOTE_WEB_DIR is a local constant; expanding it here is intended
-  if [ "$DRY_RUN" != yes ] && ! ssh "${SSH_OPTS[@]}" "$HOST" "test -f $REMOTE_WEB_DIR/.env" 2>/dev/null; then
+  if [ "$DRY_RUN" != yes ] && ! ssh -T "${SSH_OPTS[@]}" "$HOST" "test -f $REMOTE_WEB_DIR/.env" 2>/dev/null; then
     warn "não achei $REMOTE_WEB_DIR/.env no homelab — o container não sobe sem ele."
     warn "crie a partir de web/.env.example (PORT, RDO_PIN, RDO_SESSION_SECRET...) e rode de novo."
     die  "abortando o deploy web para não subir sem segredos."
@@ -148,7 +162,10 @@ deploy_web() {
   if [ "$DRY_RUN" = yes ]; then
     printf '   [dry-run] ssh %s "cd %s && docker build --network host -t rdo-solo-web:latest . && docker compose up -d --force-recreate"\n' "$HOST" "$REMOTE_WEB_DIR"
   else
-    ssh -t "${SSH_OPTS[@]}" "$HOST" "cd $REMOTE_WEB_DIR && docker build --progress=plain --network host -t rdo-solo-web:latest . && (docker compose up -d --force-recreate || docker-compose up -d --force-recreate)"
+    # Remove any pre-existing container with the fixed name first: a container created
+    # by a different compose project (or CasaOS) collides on container_name and makes
+    # `compose up` fail with a name conflict. rm -f then up = clean recreate from the new image.
+    ssh -T "${SSH_OPTS[@]}" "$HOST" "cd $REMOTE_WEB_DIR && docker build --progress=plain --network host -t rdo-solo-web:latest . && { docker rm -f rdo-solo-web >/dev/null 2>&1 || true; } && docker compose up -d"
   fi
   ok "web atualizado (imagem rebuildada, container recriado)"
 }
@@ -158,7 +175,7 @@ validate() {
   [ "$DRY_RUN" = yes ] && return 0
   step "validando no $HOST: status --json"
   # shellcheck disable=SC2029  # $REMOTE_BIN is a local constant; expanding it here is intended
-  if out="$(ssh "${SSH_OPTS[@]}" "$HOST" "$REMOTE_BIN status --json" 2>/dev/null)"; then
+  if out="$(ssh -T "${SSH_OPTS[@]}" "$HOST" "$REMOTE_BIN status --json" 2>/dev/null)"; then
     printf '%s\n' "$out" | grep -oE '"mode":"[a-z]+"|"squad":\[[^]]*\]|"console_ip":"[^"]*"' || true
     ok "gateway responde ao novo contrato (mode/squad presentes)"
   else
