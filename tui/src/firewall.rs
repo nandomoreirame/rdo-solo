@@ -174,45 +174,75 @@ fn ensure_logdrop() -> Result<()> {
     Ok(())
 }
 
-/// Drop the game's P2P ports both directions and on both src and dst port.
-pub fn load_drops(cfg: &Config) -> Result<()> {
+/// Pure rule builder for the RDO_SOLO chain. Each inner Vec is the argv of one
+/// `iptables -A RDO_SOLO ...` rule WITHOUT the leading `-A RDO_SOLO`.
+///
+/// Squad: ACCEPT squad IPs + RSONET nets first, then the port DROP block.
+/// Solo: only the port DROP block. Off: empty.
+pub fn squad_rules(cfg: &Config, mode: Mode, squad_ips: &[String]) -> Vec<Vec<String>> {
+    match mode {
+        Mode::Off => Vec::new(),
+        Mode::Solo => port_drop_rules(cfg),
+        Mode::Squad => {
+            let mut rules = Vec::new();
+            for ip in squad_ips {
+                rules.push(vec!["-s".into(), ip.clone(), "-j".into(), "ACCEPT".into()]);
+                rules.push(vec!["-d".into(), ip.clone(), "-j".into(), "ACCEPT".into()]);
+            }
+            for net in crate::squad::RSONET_NETS {
+                rules.push(vec![
+                    "-s".into(),
+                    (*net).into(),
+                    "-j".into(),
+                    "ACCEPT".into(),
+                ]);
+                rules.push(vec![
+                    "-d".into(),
+                    (*net).into(),
+                    "-j".into(),
+                    "ACCEPT".into(),
+                ]);
+            }
+            rules.extend(port_drop_rules(cfg));
+            rules
+        }
+    }
+}
+
+fn port_drop_rules(cfg: &Config) -> Vec<Vec<String>> {
+    let mut rules = Vec::new();
+    for side in ["-s", "-d"] {
+        for port_flag in ["--sport", "--dport"] {
+            for game in [GAME_PORT_SINGLE, GAME_PORT_RANGE] {
+                rules.push(vec![
+                    side.into(),
+                    cfg.console_ip.clone(),
+                    "-p".into(),
+                    "udp".into(),
+                    port_flag.into(),
+                    game.into(),
+                    "-j".into(),
+                    LOG_CHAIN.into(),
+                ]);
+            }
+        }
+    }
+    rules
+}
+
+/// Flush RDO_SOLO and reload rules for the given mode (squad allowlist + drops).
+pub fn load_drops(cfg: &Config, mode: Mode) -> Result<()> {
     run("iptables", &["-F", CHAIN], false)?;
     ensure_logdrop()?;
-    for side in ["-s", "-d"] {
-        for port in ["--sport", "--dport"] {
-            run(
-                "iptables",
-                &[
-                    "-A",
-                    CHAIN,
-                    side,
-                    &cfg.console_ip,
-                    "-p",
-                    "udp",
-                    port,
-                    GAME_PORT_SINGLE,
-                    "-j",
-                    LOG_CHAIN,
-                ],
-                false,
-            )?;
-            run(
-                "iptables",
-                &[
-                    "-A",
-                    CHAIN,
-                    side,
-                    &cfg.console_ip,
-                    "-p",
-                    "udp",
-                    port,
-                    GAME_PORT_RANGE,
-                    "-j",
-                    LOG_CHAIN,
-                ],
-                false,
-            )?;
+    let squad = crate::squad::read_squad();
+    for rule in squad_rules(cfg, mode, &squad) {
+        let mut args: Vec<&str> = Vec::with_capacity(2 + rule.len());
+        args.push("-A");
+        args.push(CHAIN);
+        for a in &rule {
+            args.push(a.as_str());
         }
+        run("iptables", &args, false)?;
     }
     Ok(())
 }
@@ -244,9 +274,8 @@ fn write_state(mode: Mode) -> Result<()> {
 
 pub fn apply_state(cfg: &Config) -> Result<()> {
     match read_state() {
-        Mode::Solo => load_drops(cfg),
-        // Task 4: squad allowlist drops. Until then, same full drop as solo.
-        Mode::Squad => load_drops(cfg),
+        Mode::Solo => load_drops(cfg, Mode::Solo),
+        Mode::Squad => load_drops(cfg, Mode::Squad),
         Mode::Off => {
             flush_filter();
             Ok(())
@@ -260,7 +289,7 @@ pub fn cmd_on(cfg: &Config) -> Result<()> {
     if !ok("iptables", &["-n", "-L", CHAIN]) {
         install_chains(cfg)?;
     }
-    load_drops(cfg)?;
+    load_drops(cfg, Mode::Solo)?;
     write_state(Mode::Solo)?;
     Ok(())
 }
@@ -616,9 +645,48 @@ pub fn status_lines(cfg: &Config) -> Vec<String> {
 mod tests {
     use super::{
         neigh_has_global_v6_for_mac, parse_accept_pkts, parse_neigh_ipv4_for_mac, read_state_at,
-        write_state_at,
+        squad_rules, write_state_at,
     };
+    use crate::config::Config;
     use crate::squad::Mode;
+
+    #[test]
+    fn squad_rules_accept_squad_and_rsonet_before_drops() {
+        use crate::squad::RSONET_NETS;
+        let cfg = Config::test_default();
+        let squad = vec!["45.184.53.184".to_string()];
+        let rules = squad_rules(&cfg, Mode::Squad, &squad);
+        assert!(rules
+            .iter()
+            .any(|r| r == &vec!["-s", "45.184.53.184", "-j", "ACCEPT"]));
+        assert!(rules
+            .iter()
+            .any(|r| r == &vec!["-d", "45.184.53.184", "-j", "ACCEPT"]));
+        for net in RSONET_NETS {
+            assert!(rules.iter().any(|r| r == &vec!["-s", *net, "-j", "ACCEPT"]));
+        }
+        assert!(rules.iter().any(|r| {
+            r.iter().any(|a| a == "6672") && r.last().map(|s| s.as_str()) == Some("RDO_LOGDROP")
+        }));
+        let first_accept = rules
+            .iter()
+            .position(|r| r.last().map(|s| s.as_str()) == Some("ACCEPT"))
+            .unwrap();
+        let first_drop = rules
+            .iter()
+            .position(|r| r.last().map(|s| s.as_str()) == Some("RDO_LOGDROP"))
+            .unwrap();
+        assert!(first_accept < first_drop);
+    }
+
+    #[test]
+    fn squad_rules_solo_has_no_accepts() {
+        let rules = squad_rules(&Config::test_default(), Mode::Solo, &[]);
+        assert!(rules
+            .iter()
+            .all(|r| r.last().map(|s| s.as_str()) != Some("ACCEPT")));
+        assert!(!rules.is_empty());
+    }
 
     #[test]
     fn state_file_roundtrips_mode_and_legacy_on() {

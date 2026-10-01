@@ -95,6 +95,18 @@ impl Config {
             console_label,
         }
     }
+
+    #[cfg(test)]
+    pub fn test_default() -> Self {
+        Config {
+            console_ip: String::from("192.168.1.250"),
+            wan_if: String::from("eth0"),
+            console_mac: None,
+            ntfy_url: None,
+            geoip_db: None,
+            console_label: None,
+        }
+    }
 }
 
 /// The interface of the default route: `ip -4 route show default | awk '{print $5}'`.
