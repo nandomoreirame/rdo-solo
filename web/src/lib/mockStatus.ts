@@ -17,7 +17,9 @@ const MOCK_PEERS = [
   { ip: "73.92.14.201", count: 3, country: "United States", cc: "US", last_seen: Date.now() },
 ];
 
-/** A populated, realistic snapshot (solo OFF, in a session with a few players). */
+/** Snapshot starting ALONE in a Normal-mode session (no players yet). The dev
+ *  simulation ticks `alone_ms` and then calls mockPeersJoin to trigger the
+ *  border alert. */
 export function initialMock(): PanelStatus {
   return {
     solo: false,
@@ -37,11 +39,20 @@ export function initialMock(): PanelStatus {
     },
     squad: { ips: [], captured_at: null },
     blocked: 332,
-    unique_ips: MOCK_PEERS.length,
+    unique_ips: 0,
     dropped_at: null,
     session_active: true,
+    peers: [],
+    alone_ms: 0,
+  };
+}
+
+/** Dev simulation: players enter the session (freezes the "alone" timer). */
+export function mockPeersJoin(s: PanelStatus): PanelStatus {
+  return {
+    ...s,
     peers: MOCK_PEERS.map((p) => ({ ...p })),
-    alone_ms: 25_000,
+    unique_ips: MOCK_PEERS.length,
   };
 }
 

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { formatUptime, soloGate, type PanelStatus } from "@/lib/status";
+import { X } from "lucide-react";
+import { formatUptime, soloGate, type PanelStatus, type Mode } from "@/lib/status";
 import {
   MOCK,
   initialMock,
@@ -9,8 +10,13 @@ import {
   mockCapture,
   mockClearSquad,
   mockRemoveSquadIp,
+  mockPeersJoin,
 } from "@/lib/mockStatus";
-import { readPanelOpen, writePanelOpen } from "@/lib/panelState";
+import { enteredWhileAlone } from "@/lib/sessionAlert";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 
 type Phase = "loading" | "login" | "ready";
 
@@ -25,6 +31,38 @@ function flag(cc: string): string {
   return cc.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)));
 }
 
+/** Shared outer-container classes (single column, centered, ~480px). */
+const WRAP =
+  "mx-auto flex min-h-[100dvh] max-w-[480px] flex-col justify-center gap-[18px] px-4 pt-6 pb-[calc(1.5rem+env(safe-area-inset-bottom))]";
+
+type UiState = "solo" | "squad" | "players" | "none";
+
+/** State border color shared by the frame and every card. */
+function stateBorderClass(s: UiState): string {
+  if (s === "solo") return "border-solo";
+  if (s === "squad") return "border-bando";
+  if (s === "players") return "border-ok";
+  return "border-border";
+}
+
+/** Inset ring, used on the controls card to echo the active state. */
+function stateRingClass(s: UiState): string {
+  if (s === "solo") return "ring-1 ring-inset ring-solo";
+  if (s === "squad") return "ring-1 ring-inset ring-bando";
+  if (s === "players") return "ring-1 ring-inset ring-ok";
+  return "";
+}
+
+/** Full-viewport frame color + inset glow per state. */
+function frameClass(s: UiState): string {
+  if (s === "solo")
+    return "border-solo shadow-[inset_0_0_0_1px_rgba(255,140,0,0.35),inset_0_0_26px_rgba(255,140,0,0.12)]";
+  if (s === "squad")
+    return "border-bando shadow-[inset_0_0_0_1px_rgba(47,123,255,0.35),inset_0_0_26px_rgba(47,123,255,0.12)]";
+  // players
+  return "border-ok shadow-[inset_0_0_0_1px_rgba(53,199,89,0.35),inset_0_0_26px_rgba(53,199,89,0.12)]";
+}
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [status, setStatus] = useState<PanelStatus | null>(null);
@@ -34,35 +72,72 @@ export default function Home() {
   const [, setLive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [forced, setForced] = useState(false);
-  const [panelOpen, setPanelOpen] = useState(true);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
-  useEffect(() => {
-    setPanelOpen(readPanelOpen(true));
-  }, []);
+  const [pulseUntil, setPulseUntil] = useState(0);
+  const prevPeersCountRef = useRef<number | null>(null);
+  const seededAlertRef = useRef(false);
   // Auto-dismiss the capture feedback after 4s.
   useEffect(() => {
     if (!captureMsg) return;
     const t = setTimeout(() => setCaptureMsg(null), 4000);
     return () => clearTimeout(t);
   }, [captureMsg]);
-  const togglePanel = useCallback(() => {
-    setPanelOpen((v) => {
-      const next = !v;
-      writePanelOpen(next);
-      return next;
-    });
-  }, []);
+  // Border alert: pulse when, in Normal mode, the session goes from you alone to
+  // a player entering. Seeds the baseline on first observation so opening the
+  // page with players already present does not pulse.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape" && panelOpen) togglePanel();
+    if (!status) return;
+    const count = status.peers?.length ?? 0;
+    const prev = prevPeersCountRef.current;
+    prevPeersCountRef.current = count;
+    if (status.mode !== "off" || !seededAlertRef.current) {
+      seededAlertRef.current = true;
+      return;
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [panelOpen, togglePanel]);
-
+    if (enteredWhileAlone(prev ?? count, count)) setPulseUntil(Date.now() + 6000);
+  }, [status]);
+  // DEV-ONLY (mock): stay alone for 30s counting up, then players enter — so the
+  // border alert (pulse + green frame) can be seen locally without the gateway.
+  useEffect(() => {
+    if (!MOCK) return;
+    let elapsed = 0;
+    const iv = setInterval(() => {
+      elapsed += 1000;
+      if (elapsed < 30_000) {
+        setStatus((s) => (s ? { ...s, alone_ms: elapsed } : s));
+      } else {
+        clearInterval(iv);
+        setStatus((s) => (s ? mockPeersJoin(s) : s));
+      }
+    }, 1000);
+    return () => clearInterval(iv);
+  }, []);
   const wsRef = useRef<WebSocket | null>(null);
   const mounted = useRef(true);
   const readyRef = useRef(false);
+
+  // The mode we just asked the gateway for. The monitor only re-reads the mode
+  // on its 4s poll, so between our request and the next poll it emits WS frames
+  // carrying the OLD mode. While a change is pending we keep the expected mode
+  // and ignore those stale frames, so the optimistic flip doesn't revert.
+  const expectedModeRef = useRef<Mode | null>(null);
+  const expectedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearExpected = useCallback(() => {
+    expectedModeRef.current = null;
+    if (expectedTimerRef.current) {
+      clearTimeout(expectedTimerRef.current);
+      expectedTimerRef.current = null;
+    }
+  }, []);
+  const armExpected = useCallback((m: Mode) => {
+    expectedModeRef.current = m;
+    if (expectedTimerRef.current) clearTimeout(expectedTimerRef.current);
+    // Safety valve: never ignore the server indefinitely if it never converges.
+    expectedTimerRef.current = setTimeout(() => {
+      expectedModeRef.current = null;
+      expectedTimerRef.current = null;
+    }, 10_000);
+  }, []);
 
   const connectWs = useCallback(() => {
     if (wsRef.current || !readyRef.current) return;
@@ -75,7 +150,17 @@ export default function Home() {
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data as string) as WsMessage;
-        if (msg.type === "status" && msg.data) setStatus(msg.data);
+        if (msg.type !== "status" || !msg.data) return;
+        const data = msg.data;
+        const exp = expectedModeRef.current;
+        if (exp !== null && data.mode !== exp) {
+          // Change still propagating: keep the expected mode and our running
+          // uptime, take every other live field (peers, blocked, health).
+          setStatus((prev) => (prev ? { ...data, mode: exp, since_epoch: prev.since_epoch } : { ...data, mode: exp }));
+          return;
+        }
+        if (exp !== null && data.mode === exp) clearExpected();
+        setStatus(data);
       } catch {
         /* ignore malformed frames */
       }
@@ -89,7 +174,7 @@ export default function Home() {
       }, 2000);
     };
     ws.onerror = () => ws.close();
-  }, []);
+  }, [clearExpected]);
 
   useEffect(() => {
     mounted.current = true;
@@ -158,16 +243,28 @@ export default function Home() {
 
   async function postSoloAction(action: "on" | "off" | "squad") {
     if (!status || busy) return;
+    const target: Mode = action === "on" ? "solo" : action === "squad" ? "squad" : "off";
     if (MOCK) {
-      const mode = action === "on" ? "solo" : action === "squad" ? "squad" : "off";
-      setStatus((s) => (s ? mockSetMode(s, mode) : s));
+      setStatus((s) => (s ? mockSetMode(s, target) : s));
       setForced(false);
       setCaptureMsg(null);
       return;
     }
+    // Optimistic: flip the button + borders now, and remember the target so
+    // stale WS frames don't revert it while the gateway catches up.
+    const prevMode = status.mode;
+    const prevSince = status.since_epoch;
+    armExpected(target);
+    setStatus((s) =>
+      s
+        ? { ...s, mode: target, since_epoch: target === "off" ? null : Math.floor(Date.now() / 1000) }
+        : s,
+    );
     setBusy(true);
     setErr("");
     setCaptureMsg(null);
+    const revert = () =>
+      setStatus((s) => (s ? { ...s, mode: prevMode, since_epoch: prevSince } : s));
     try {
       const r = await fetch("/api/solo", {
         method: "POST",
@@ -176,19 +273,27 @@ export default function Home() {
       });
       const j = (await r.json()) as { ok?: boolean; error?: string; status?: PanelStatus };
       if (r.ok && j.ok && j.status) {
+        const confirmed = j.status;
+        armExpected(confirmed.mode);
         setStatus((prev) => ({
-          ...(j.status as PanelStatus),
+          ...confirmed,
           blocked: prev?.blocked ?? 0,
           unique_ips: prev?.unique_ips ?? 0,
         }));
         setForced(false);
       } else if (r.status === 401) {
+        clearExpected();
+        revert();
         readyRef.current = false;
         setPhase("login");
       } else {
+        clearExpected();
+        revert();
         setErr(j.error ?? "falha ao executar");
       }
     } catch {
+      clearExpected();
+      revert();
       setErr("erro de conexão");
     } finally {
       setBusy(false);
@@ -349,22 +454,21 @@ export default function Home() {
 
   if (phase === "loading") {
     return (
-      <main className="wrap">
-        <p className="conn">carregando…</p>
+      <main className={WRAP}>
+        <p className="text-center text-xs text-muted-foreground">carregando…</p>
       </main>
     );
   }
 
   if (phase === "login") {
     return (
-      <main className="wrap">
-        <form className="login" onSubmit={login}>
-          <div className="brand" style={{ justifyContent: "center" }}>
-            <h1>rdo-solo</h1>
+      <main className={WRAP}>
+        <form className="my-auto flex flex-col gap-4 text-center" onSubmit={login}>
+          <div className="flex items-baseline justify-center gap-2">
+            <h1 className="text-xl font-semibold tracking-wide">rdo-solo</h1>
           </div>
-          <p>digite o PIN para controlar o modo solo</p>
-          <input
-            className="pin"
+          <p className="text-muted-foreground">digite o PIN para controlar o modo solo</p>
+          <Input
             type="password"
             inputMode="numeric"
             autoComplete="off"
@@ -372,11 +476,16 @@ export default function Home() {
             onChange={(e) => setPin(e.target.value)}
             placeholder="••••"
             autoFocus
+            className="h-auto rounded-xl py-4 text-center text-2xl tracking-[0.4em] md:text-2xl"
           />
-          <button className="btn" type="submit" disabled={busy || pin.length === 0}>
+          <Button
+            type="submit"
+            disabled={busy || pin.length === 0}
+            className="h-auto rounded-xl bg-bando py-4 text-base font-bold text-bando-foreground hover:bg-bando/90"
+          >
             {busy ? "verificando…" : "entrar"}
-          </button>
-          <div className="err">{err}</div>
+          </Button>
+          <div className="min-h-[18px] text-sm text-destructive">{err}</div>
         </form>
       </main>
     );
@@ -391,6 +500,13 @@ export default function Home() {
   const peerByIp = new Map(peers.map((p) => [p.ip, p]));
   const squadActive = mode === "squad";
   const filterOn = mode !== "off";
+  const playersPresent = mode === "off" && peers.length > 0;
+  const framePulsing = playersPresent && pulseUntil > now;
+  // Drives the state color shared by the frame and every card border.
+  const uiState: UiState = squadActive ? "squad" : mode === "solo" ? "solo" : playersPresent ? "players" : "none";
+  // Modes are mutually exclusive: one active disables the other's switch.
+  const soloDisabled = busy || !status || squadActive || (gateBlocked && !forced);
+  const bandoDisabled = busy || !status || mode === "solo";
   const emptySquadWarn = squadActive && squad.ips.length === 0;
   const uptime =
     filterOn && status?.since_epoch
@@ -409,189 +525,204 @@ export default function Home() {
     warn = { text: "⚠ o console não passa pelo gateway (bloqueio sem efeito)" };
   else if (h?.console_ipv6) warn = { text: "⚠ Xbox com IPv6 — o filtro não cobre IPv6", soft: true };
 
+  const softAlert =
+    "rounded-lg border border-solo/40 bg-solo/10 px-3 py-2.5 text-sm text-[#ffd39b]";
+  const hardAlert =
+    "rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-[#ffb4ae]";
+  const sectionLabel =
+    "text-xs font-medium uppercase tracking-wide text-muted-foreground";
+
   return (
-    <main className="wrap">
-      {filterOn && (
-        <div className={`solo-frame${squadActive ? " squad" : ""}`} aria-hidden="true" />
+    <main className={WRAP} data-state={uiState}>
+      {uiState !== "none" && (
+        <div
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none fixed inset-[5px] z-50 rounded-lg border-[3px] md:inset-[10px]",
+            frameClass(uiState),
+            (filterOn || (uiState === "players" && framePulsing)) && "animate-frame-pulse",
+          )}
+        />
       )}
-      <button
-        type="button"
-        className="panel-toggle"
-        aria-expanded={panelOpen}
-        aria-controls="panel"
-        onClick={togglePanel}
-      >
-        {panelOpen ? "fechar" : "painel"}
-      </button>
 
       {status?.dropped_at && now - status.dropped_at < 120_000 && (
-        <div className="drop">
+        <div className="rounded-xl bg-destructive px-4 py-3.5 text-center text-sm font-extrabold text-foreground">
           ⚠ SESSÃO CAIU há {formatUptime(now - status.dropped_at)}
           {mode === "off" && " — filtro desligado, pode reconectar"}
         </div>
       )}
 
-      <section className="controls">
-      <div className={`card ${mode === "solo" ? "solo" : ""} ${squadActive ? "squad" : ""}`}>
-        <div className="btns">
-          <button
-            type="button"
-            className={`toggle ${mode === "solo" ? "on" : "off"}`}
-            onClick={toggle}
-            disabled={busy || !status || (gateBlocked && !forced)}
-            aria-pressed={mode === "solo"}
-            aria-label={mode === "solo" ? "Desligar modo solo" : "Ligar modo solo"}
-          >
-            {busy ? "…" : "MODO SOLO"}
-          </button>
-          <button
-            type="button"
-            className={`toggle squad-toggle ${squadActive ? "on" : "off"}`}
-            onClick={toggleSquad}
-            disabled={busy || !status}
-            aria-pressed={squadActive}
-            aria-label={squadActive ? "Parar de isolar o bando" : "Isolar o bando"}
-          >
-            {busy ? "…" : "ISOLAR BANDO"}
-          </button>
-        </div>
-        <p className="ctl-meta">
-          {mode === "solo" || squadActive
-            ? `há ${uptime}`
-            : status?.alone_ms != null
-              ? `sozinho ${formatUptime(status.alone_ms)}`
-              : " "}
-        </p>
-        {emptySquadWarn && (
-          <div className="squad-warn" role="status">
-            Bando vazio: isso expulsa todos os players (só os relays ficam)
+      <section className="flex flex-col gap-3.5">
+        <Card
+          className={cn(
+            "gap-3 p-5",
+            stateBorderClass(uiState),
+            filterOn ? "animate-border-pulse" : stateRingClass(uiState),
+          )}
+        >
+          <div className="flex flex-col gap-3">
+            <Button
+              type="button"
+              onClick={toggle}
+              disabled={soloDisabled}
+              aria-pressed={mode === "solo"}
+              aria-busy={busy}
+              aria-label={mode === "solo" ? "Desligar modo solo" : "Ligar modo solo"}
+              size="lg"
+              className={cn(
+                "w-full rounded-xl border",
+                mode === "solo"
+                  ? "border-transparent bg-solo text-solo-foreground hover:bg-solo/90"
+                  : "border-solo/50 bg-transparent text-solo hover:bg-solo/10",
+              )}
+            >
+              SOLO
+            </Button>
+            <Button
+              type="button"
+              onClick={toggleSquad}
+              disabled={bandoDisabled}
+              aria-pressed={squadActive}
+              aria-busy={busy}
+              aria-label={squadActive ? "Parar de isolar o bando" : "Isolar o bando"}
+              size="lg"
+              className={cn(
+                "w-full rounded-xl border",
+                squadActive
+                  ? "border-transparent bg-bando text-bando-foreground hover:bg-bando/90"
+                  : "border-bando/50 bg-transparent text-bando hover:bg-bando/10",
+              )}
+            >
+              BANDO
+            </Button>
           </div>
-        )}
-        {gateBlocked && (
-          <div className="warn soft">
-            {gate.reason}{" "}
-            {!forced && (
-              <button type="button" className="force" onClick={() => setForced(true)}>
-                ligar mesmo assim
-              </button>
-            )}
-          </div>
-        )}
-        {warn && <div className={`warn ${warn.soft ? "soft" : ""}`}>{warn.text}</div>}
-      </div>
-      </section>
-
-      <aside id="panel" className="panel" data-open={panelOpen} aria-label="Informações">
-          <div className="card squad-list">
-            <div className="squad-list-head">
-              <div className="k">Bando salvo</div>
-              <div className="squad-actions">
-                <button
-                  type="button"
-                  className="squad-capture"
-                  onClick={captureSquad}
-                  disabled={busy || mode !== "off"}
-                  aria-label="Capturar IPs dos peers ativos"
-                >
-                  Capturar IPs
-                </button>
-                <button
-                  type="button"
-                  className="squad-clear"
-                  onClick={clearSavedSquad}
-                  disabled={busy || (squad.ips.length === 0 && !squad.captured_at)}
-                  aria-label="Limpar bando salvo"
-                >
-                  limpar
-                </button>
-              </div>
-            </div>
-            {capturedLabel && <p className="squad-captured">capturado: {capturedLabel}</p>}
-            {squad.ips.length === 0 ? (
-              <p className="squad-empty">nenhum IP salvo</p>
-            ) : (
-              <ul className="peerlist">
-                {squad.ips.map((ip) => {
-                  const peer = peerByIp.get(ip);
-                  return (
-                    <li key={ip}>
-                      <span className="pc">
-                        {peer ? (
-                          <>
-                            {flag(peer.cc)} {peer.country || "país desconhecido"}
-                          </>
-                        ) : (
-                          "—"
-                        )}
-                      </span>
-                      <span className="pip">{ip}</span>
-                      <button
-                        type="button"
-                        className="squad-remove"
-                        onClick={() => removeSquadIp(ip)}
-                        disabled={busy}
-                        aria-label={`Remover ${ip} do bando`}
-                        title="remover do bando"
-                      >
-                        ×
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {captureMsg && (
-              <p className="squad-msg" role="status">
-                {captureMsg}
-              </p>
-            )}
-          </div>
-
-          <div className="grid">
-            <div className="metric">
-              <div className="k">bloqueios</div>
-              <div className="v">{status?.blocked ?? 0}</div>
-            </div>
-            <div className="metric">
-              <div className="k">IPs distintos</div>
-              <div className="v">{status?.unique_ips ?? 0}</div>
-            </div>
-          </div>
-
-          {peers.length > 0 && (
-            <div className="card">
-              <div className="k">
-                {filterOn ? "tentando entrar (bloqueados)" : "na sua sessão"}
-              </div>
-              <ul className="peerlist">
-                {peers.slice(0, 10).map((p) => (
-                  <li key={p.ip}>
-                    <span className="pc">
-                      {flag(p.cc)} {p.country || "país desconhecido"}
-                    </span>
-                    <span className="pip">{p.ip}</span>
-                    <span className="pn">{p.count}</span>
-                  </li>
-                ))}
-              </ul>
+          <p className="min-h-5 text-center text-sm tabular-nums text-muted-foreground">
+            {mode === "solo" || squadActive
+              ? `há ${uptime}`
+              : status?.alone_ms != null
+                ? `sozinho ${formatUptime(status.alone_ms)}`
+                : " "}
+          </p>
+          {emptySquadWarn && (
+            <div className={softAlert} role="status">
+              Bando vazio: isso expulsa todos os players (só os relays ficam)
             </div>
           )}
-
-          <div className="card">
-            <div className="health">
-              <span className={`dot ${h?.forwarding ? "ok" : ""}`}>encaminha</span>
-              <span className={`dot ${h?.redirects_ok ? "ok" : ""}`}>redirec.</span>
-              <span className={`dot ${h?.route_rule ? "ok" : ""}`}>rota</span>
-              <span className={`dot ${h?.console_present && !h?.ip_mismatch ? "ok" : ""}`}>console</span>
+          {gateBlocked && (
+            <div className={softAlert}>
+              {gate.reason}{" "}
+              {!forced && (
+                <button
+                  type="button"
+                  className="cursor-pointer bg-transparent p-0 font-[inherit] text-bando underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                  onClick={() => setForced(true)}
+                >
+                  ligar mesmo assim
+                </button>
+              )}
             </div>
-          </div>
+          )}
+          {warn && <div className={warn.soft ? softAlert : hardAlert}>{warn.text}</div>}
+        </Card>
+      </section>
+
+      <aside id="panel" className="flex flex-col gap-3.5" aria-label="Informações">
+        {squad.ips.length > 0 && (
+          <Card className={cn("gap-3 p-5", stateBorderClass(uiState), filterOn && "animate-border-pulse")}>
+            <div className="flex items-center justify-between gap-2">
+              <div className={sectionLabel}>Bando salvo</div>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs text-muted-foreground underline hover:text-destructive"
+                onClick={clearSavedSquad}
+                disabled={busy}
+                aria-label="Limpar bando salvo"
+              >
+                limpar
+              </Button>
+            </div>
+            {capturedLabel && (
+              <p className="text-xs text-muted-foreground">capturado: {capturedLabel}</p>
+            )}
+            <ul className="flex flex-col gap-1.5">
+              {squad.ips.map((ip) => {
+                const peer = peerByIp.get(ip);
+                return (
+                  <li key={ip} className="flex items-center gap-2 text-sm">
+                    <span className="flex-1 truncate text-foreground">
+                      {peer ? (
+                        <>
+                          {flag(peer.cc)} {peer.country || "país desconhecido"}
+                        </>
+                      ) : (
+                        "—"
+                      )}
+                    </span>
+                    <span className="text-muted-foreground tabular-nums">{ip}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="size-5 shrink-0 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => removeSquadIp(ip)}
+                      disabled={busy}
+                      aria-label={`Remover ${ip} do bando`}
+                      title="remover do bando"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        )}
+
+        {peers.length > 0 && (
+          <Card className={cn("gap-3 p-5", stateBorderClass(uiState), filterOn && "animate-border-pulse")}>
+            <div className={sectionLabel}>
+              {filterOn ? "tentando entrar (bloqueados)" : "na sua sessão"}
+            </div>
+            <ul className="flex flex-col gap-1.5">
+              {peers.slice(0, 10).map((p) => (
+                <li key={p.ip} className="flex items-center gap-2 text-sm">
+                  <span className="flex-1 truncate text-foreground">
+                    {flag(p.cc)} {p.country || "país desconhecido"}
+                  </span>
+                  <span className="text-muted-foreground tabular-nums">{p.ip}</span>
+                  <span className="min-w-7 text-right text-muted-foreground tabular-nums">
+                    {p.count}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex flex-col items-center gap-2 border-t border-border pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="rounded-full"
+                onClick={captureSquad}
+                disabled={busy || mode !== "off"}
+                aria-label="Capturar IPs dos peers ativos"
+              >
+                Capturar IPs
+              </Button>
+              {captureMsg && (
+                <p className="text-center text-sm text-ok" role="status">
+                  {captureMsg}
+                </p>
+              )}
+            </div>
+          </Card>
+        )}
       </aside>
 
-      <div className="panel-backdrop" hidden={!panelOpen} onClick={togglePanel} />
-
       {err && (
-        <div className="conn">
-          <div className="err">{err}</div>
+        <div className="text-center text-xs text-muted-foreground">
+          <div className="min-h-[18px] text-sm text-destructive">{err}</div>
         </div>
       )}
     </main>
