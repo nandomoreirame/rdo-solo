@@ -15,7 +15,7 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends iptables iproute2 procps tcpdump \
+  && apt-get install -y --no-install-recommends iptables iproute2 procps tcpdump curl \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/.next ./.next
 COPY --from=build /app/node_modules ./node_modules
