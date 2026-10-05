@@ -54,6 +54,17 @@ export interface PanelPeer {
   last_seen: number;
 }
 
+/** The VPN exit the console is routed through (null when the tunnel is down and
+ *  the console falls back to the home WAN — i.e. no VPN protection right now). */
+export interface VpnInfo {
+  /** Public IP the console's traffic exits from (the VPN endpoint's egress IP). */
+  exit_ip: string;
+  /** ISO country code of the exit IP, or "". */
+  cc: string;
+  /** Country name of the exit IP, or "". */
+  country: string;
+}
+
 export interface PanelStatus extends SoloStatus, LiveCounters {
   /** Epoch ms of the last detected session drop, or null. */
   dropped_at: number | null;
@@ -63,6 +74,8 @@ export interface PanelStatus extends SoloStatus, LiveCounters {
   peers: PanelPeer[];
   /** Ms alone in the session since solo went off (frozen when a player joins), or null. */
   alone_ms: number | null;
+  /** The VPN exit the console is routed through, or null when off/unknown. */
+  vpn: VpnInfo | null;
 }
 
 const EMPTY_HEALTH: RouteHealth = {

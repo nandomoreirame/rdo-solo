@@ -44,6 +44,7 @@ export function initialMock(): PanelStatus {
     session_active: true,
     peers: [],
     alone_ms: 0,
+    vpn: { exit_ip: "198.44.133.115", cc: "US", country: "United States" },
   };
 }
 

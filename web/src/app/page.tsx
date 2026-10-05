@@ -552,6 +552,15 @@ export default function Home() {
         </div>
       )}
 
+      {status?.vpn ? (
+        <p className="text-center text-xs text-muted-foreground tabular-nums">
+          Xbox via VPN · {flag(status.vpn.cc)} {status.vpn.exit_ip}
+          {status.vpn.country ? ` · ${status.vpn.country}` : ""}
+        </p>
+      ) : status?.vpn === null ? (
+        <p className="text-center text-xs text-solo/80">Xbox sem VPN (saída direta)</p>
+      ) : null}
+
       <section className="flex flex-col gap-3.5">
         <Card
           className={cn(

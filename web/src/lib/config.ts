@@ -19,6 +19,8 @@ export interface AppConfig {
   dropSilenceMs: number;
   /** Sustained RSONET traffic that confirms a real session before arming. */
   dropConfirmMs: number;
+  /** Interface the console is routed through; probed to show the VPN exit IP. */
+  vpnIface: string;
 }
 
 let cached: AppConfig | null = null;
@@ -51,6 +53,7 @@ export function getConfig(): AppConfig {
     autoOff: (process.env.RDO_AUTO_OFF ?? "1") !== "0",
     dropSilenceMs: (Number(process.env.RDO_DROP_SILENCE_SECS ?? "45") || 45) * 1000,
     dropConfirmMs: (Number(process.env.RDO_DROP_CONFIRM_SECS ?? "8") || 8) * 1000,
+    vpnIface: process.env.RDO_VPN_IFACE ?? "wg-vpn",
   };
   return cached;
 }

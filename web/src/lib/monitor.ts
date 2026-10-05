@@ -10,15 +10,19 @@ import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { getConfig } from "./config";
 import { readStatus, toggleSolo } from "./rdo";
-import { parseStatusJson, type PanelStatus, type PanelPeer, type SoloStatus } from "./status";
+import { parseStatusJson, type PanelStatus, type PanelPeer, type SoloStatus, type VpnInfo } from "./status";
 import { DropDetector } from "./dropDetector";
 import { notifyDiscord } from "./notify";
 import { publishSessionPeers } from "./sessionPeers";
+import { parseVpnProbe, vpnProbeArgs, vpnEqual } from "./vpn";
 
 const execFileP = promisify(execFile);
 
 const POLL_MS = 4000;
 const COUNTER_FLUSH_MS = 1000;
+/** The VPN exit only changes on a tunnel restart (daily country rotation), so a
+ *  slow probe is plenty. */
+const VPN_PROBE_MS = 300_000;
 /** iptables chain that logs+drops the blocked P2P packets (matches the shell script). */
 const LOG_CHAIN = "RDO_LOGDROP";
 /** The game's peer-to-peer UDP ports; traffic here (minus Rockstar relays) is players. */
@@ -118,8 +122,10 @@ class SoloMonitor extends EventEmitter {
   /** GeoIP results, cached per IP (null = looked up and failed/unknown). */
   private geo = new Map<string, { country: string; cc: string } | null>();
   private firstPlayerAt: number | null = null;
+  private vpn: VpnInfo | null = null;
   private pollTimer?: ReturnType<typeof setInterval>;
   private flushTimer?: ReturnType<typeof setInterval>;
+  private vpnTimer?: ReturnType<typeof setInterval>;
   private p2pTail?: ChildProcess;
   private rockstarTail?: ChildProcess;
   private detector?: DropDetector;
@@ -135,6 +141,8 @@ class SoloMonitor extends EventEmitter {
     this.detector = new DropDetector(cfg.dropSilenceMs, cfg.dropConfirmMs);
     void this.poll();
     this.pollTimer = setInterval(() => void this.poll(), POLL_MS);
+    void this.probeVpn();
+    this.vpnTimer = setInterval(() => void this.probeVpn(), VPN_PROBE_MS);
     // Coalesce high-rate peer/counter changes into at most one emit per second,
     // and check the drop detector on the same beat.
     this.flushTimer = setInterval(() => {
@@ -157,6 +165,7 @@ class SoloMonitor extends EventEmitter {
   stop(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.flushTimer) clearInterval(this.flushTimer);
+    if (this.vpnTimer) clearInterval(this.vpnTimer);
     for (const t of [this.p2pTail, this.rockstarTail]) t?.kill();
     this.p2pTail = undefined;
     this.rockstarTail = undefined;
@@ -186,7 +195,26 @@ class SoloMonitor extends EventEmitter {
       session_active: this.detector?.isActive(now) ?? false,
       peers,
       alone_ms: aloneMs(soloOff, aloneSince, this.firstPlayerAt, now),
+      vpn: this.vpn,
     };
+  }
+
+  /** Read the public IP the console exits from by probing ip-api BOUND to the
+   *  tunnel interface (a plain request would report the home WAN IP). A failure
+   *  — tunnel down, curl missing — means no VPN, surfaced as null. */
+  private async probeVpn(): Promise<void> {
+    const { vpnIface } = getConfig();
+    let next: VpnInfo | null = null;
+    try {
+      const { stdout } = await execFileP("curl", vpnProbeArgs(vpnIface), { timeout: 8000 });
+      next = parseVpnProbe(stdout);
+    } catch {
+      next = null; // no tunnel / no curl → console is on the WAN, no VPN
+    }
+    if (!vpnEqual(next, this.vpn)) {
+      this.vpn = next;
+      this.emit("update", this.snapshot());
+    }
   }
 
   private async poll(): Promise<void> {
