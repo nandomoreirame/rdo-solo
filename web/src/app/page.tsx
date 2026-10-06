@@ -585,7 +585,7 @@ export default function Home() {
                   : "border-solo/50 bg-transparent text-solo hover:bg-solo/10",
               )}
             >
-              SOLO
+              SESSÃO SOLO
             </Button>
             <Button
               type="button"
@@ -602,7 +602,7 @@ export default function Home() {
                   : "border-bando/50 bg-transparent text-bando hover:bg-bando/10",
               )}
             >
-              BANDO
+              SESSÃO EM BANDO
             </Button>
           </div>
           <p className="min-h-5 text-center text-sm tabular-nums text-muted-foreground">
