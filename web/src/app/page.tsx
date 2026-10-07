@@ -69,7 +69,6 @@ export default function Home() {
   const [pin, setPin] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [, setLive] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [forced, setForced] = useState(false);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
@@ -144,9 +143,6 @@ export default function Home() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
     wsRef.current = ws;
-    ws.onopen = () => {
-      if (mounted.current) setLive(true);
-    };
     ws.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data as string) as WsMessage;
@@ -168,7 +164,6 @@ export default function Home() {
     ws.onclose = () => {
       wsRef.current = null;
       if (!mounted.current) return;
-      setLive(false);
       setTimeout(() => {
         if (mounted.current && readyRef.current) connectWs();
       }, 2000);
@@ -183,7 +178,6 @@ export default function Home() {
         setStatus(initialMock());
         readyRef.current = true;
         setPhase("ready");
-        setLive(true);
         return;
       }
       try {
@@ -275,11 +269,10 @@ export default function Home() {
       if (r.ok && j.ok && j.status) {
         const confirmed = j.status;
         armExpected(confirmed.mode);
-        setStatus((prev) => ({
-          ...confirmed,
-          blocked: prev?.blocked ?? 0,
-          unique_ips: prev?.unique_ips ?? 0,
-        }));
+        // /api/solo returns a SoloStatus (no peers/vpn/dropped_at/session_active/
+        // alone_ms); merge it OVER prev so those live fields survive until the next
+        // WS frame instead of blanking out after every toggle.
+        setStatus((prev) => (prev ? { ...prev, ...confirmed } : prev));
         setForced(false);
       } else if (r.status === 401) {
         clearExpected();
