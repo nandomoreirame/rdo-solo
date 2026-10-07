@@ -50,11 +50,12 @@ export function rsonetFilter(consoleIp: string, nets: string[]): string {
 /** Parse the DROP rule packet count from `iptables -L RDO_LOGDROP -v -x -n`. This
  *  is the real block count and works in the container (unlike journalctl). */
 export function parseBlockedCount(out: string): number {
+  let total = 0;
   for (const line of out.split("\n")) {
     const m = line.match(/^\s*(\d+)\s+\d+\s+DROP\b/);
-    if (m) return Number(m[1]);
+    if (m) total += Number(m[1]);
   }
-  return 0;
+  return total;
 }
 
 function ipToInt(ip: string): number | null {
@@ -128,6 +129,8 @@ class SoloMonitor extends EventEmitter {
   private vpnTimer?: ReturnType<typeof setInterval>;
   private p2pTail?: ChildProcess;
   private rockstarTail?: ChildProcess;
+  /** Console IP the tcpdump tails are currently pinned to (re-pinned on change). */
+  private tailIp?: string;
   private detector?: DropDetector;
   private droppedAt: number | null = null;
   private started = false;
@@ -219,15 +222,27 @@ class SoloMonitor extends EventEmitter {
 
   private async poll(): Promise<void> {
     const next = await readStatus().catch(() => this.status);
-    const wasSolo = this.status.solo;
+    const wasMode = this.status.mode;
     this.status = next;
+    // Re-pin the tails when the console IP changes (DHCP): otherwise both tcpdump
+    // filters keep matching the OLD host forever — empty peer list, no drop
+    // detection. health.ip_mismatch warns about it; this makes capture recover.
+    if (next.console_ip && next.console_ip !== this.tailIp) {
+      this.p2pTail?.kill();
+      this.p2pTail = undefined;
+      this.rockstarTail?.kill();
+      this.rockstarTail = undefined;
+      this.tailIp = next.console_ip;
+    }
     // Start the tails once we know the console IP (both run regardless of solo:
     // RSONET for drop detection, P2P for the players/intruders list).
     if (next.console_ip && !this.rockstarTail) this.startRockstarTail(next.console_ip);
     if (next.console_ip && !this.p2pTail) this.startP2pTail(next.console_ip);
-    // On a solo flip the audience changes (players vs blocked intruders), so
-    // start the peer list fresh and (re)arm the "alone" timer.
-    if (next.solo !== wasSolo) {
+    // On ANY mode change (off/solo/squad) the audience changes (players vs blocked
+    // intruders), so start the peer list fresh and (re)arm the "alone" timer.
+    // NB: off and squad both have solo===false, so keying on `mode` (not `solo`)
+    // is required to reset on an off<->squad switch.
+    if (next.mode !== wasMode) {
       this.peers.clear();
       this.firstPlayerAt = null;
     }

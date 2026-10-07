@@ -26,6 +26,16 @@ describe("parseBlockedCount", () => {
   it("is 0 when there is no DROP rule", () => {
     expect(parseBlockedCount("Chain RDO_LOGDROP (0 references)\n")).toBe(0);
   });
+
+  it("sums the count across multiple DROP rules", () => {
+    const out = [
+      "Chain RDO_LOGDROP (8 references)",
+      " pkts bytes target     prot opt in     out     source               destination",
+      "   10      100 DROP       0    --  *      *       0.0.0.0/0            0.0.0.0/0",
+      "    5       50 DROP       0    --  *      *       0.0.0.0/0            0.0.0.0/0",
+    ].join("\n");
+    expect(parseBlockedCount(out)).toBe(15);
+  });
 });
 
 describe("inNets", () => {
