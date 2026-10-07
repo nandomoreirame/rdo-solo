@@ -21,6 +21,8 @@ export interface AppConfig {
   dropConfirmMs: number;
   /** Interface the console is routed through; probed to show the VPN exit IP. */
   vpnIface: string;
+  /** Trust X-Forwarded-For / X-Real-IP (only when behind a real reverse proxy). */
+  trustProxy: boolean;
 }
 
 let cached: AppConfig | null = null;
@@ -54,6 +56,7 @@ export function getConfig(): AppConfig {
     dropSilenceMs: (Number(process.env.RDO_DROP_SILENCE_SECS ?? "45") || 45) * 1000,
     dropConfirmMs: (Number(process.env.RDO_DROP_CONFIRM_SECS ?? "8") || 8) * 1000,
     vpnIface: process.env.RDO_VPN_IFACE ?? "wg-vpn",
+    trustProxy: process.env.RDO_TRUST_PROXY === "1",
   };
   return cached;
 }

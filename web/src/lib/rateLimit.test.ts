@@ -26,4 +26,13 @@ describe("RateLimiter", () => {
     rl.reset("a");
     expect(rl.allow("a", 0)).toBe(true);
   });
+
+  it("evicts keys whose window has fully expired (bounded map)", () => {
+    const rl = new RateLimiter(5, 1000);
+    expect(rl.allow("a", 0)).toBe(true);
+    expect(rl.size).toBe(1);
+    // By t=2000 'a's only hit (at 0) has aged out; touching 'b' prunes 'a'.
+    expect(rl.allow("b", 2000)).toBe(true);
+    expect(rl.size).toBe(1);
+  });
 });

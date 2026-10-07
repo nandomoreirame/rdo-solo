@@ -1,7 +1,7 @@
 //! Stateless signed-cookie sessions and constant-time PIN check. No DB: a valid
 //! cookie is an HMAC over a small payload, so any tamper or expiry is rejected.
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 export interface SessionPayload {
   /** issued-at, epoch ms */
@@ -51,11 +51,12 @@ export function verifySession(
   return payload;
 }
 
-/** Constant-time PIN comparison (no early-out on length or first mismatch). */
+/** Constant-time PIN comparison. Both sides are reduced to a fixed-length SHA-256
+ *  digest before timingSafeEqual, so neither a length check nor the compare time
+ *  leaks the real PIN's length. */
 export function verifyPin(expected: string, provided: string): boolean {
-  const a = Buffer.from(String(expected));
-  const b = Buffer.from(String(provided));
-  if (a.length === 0) return false;
-  if (a.length !== b.length) return false;
+  if (!expected) return false;
+  const a = createHash("sha256").update(String(expected)).digest();
+  const b = createHash("sha256").update(String(provided)).digest();
   return timingSafeEqual(a, b);
 }

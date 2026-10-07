@@ -7,7 +7,9 @@ import { clientIp } from "@/lib/authGuard";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Throttle PIN guessing: 5 attempts per minute per client IP.
+// Throttle PIN guessing: 5 attempts per minute. Keyed globally by default
+// (clientIp returns "global" with no trusted proxy); per-IP only when
+// RDO_TRUST_PROXY=1. See authGuard.clientIp.
 const limiter = new RateLimiter(5, 60_000);
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
