@@ -13,7 +13,7 @@ import { readStatus, toggleSolo } from "./rdo";
 import { parseStatusJson, type PanelStatus, type PanelPeer, type SoloStatus, type VpnInfo } from "./status";
 import { DropDetector } from "./dropDetector";
 import { notifyDiscord } from "./notify";
-import { publishSessionPeers } from "./sessionPeers";
+import { publishSessionPeers, publishSnapshot } from "./sessionPeers";
 import { parseVpnProbe, vpnProbeArgs, vpnEqual } from "./vpn";
 
 const execFileP = promisify(execFile);
@@ -324,6 +324,9 @@ class SoloMonitor extends EventEmitter {
   private publishPeers(now = Date.now()): void {
     this.prunePeers(now);
     publishSessionPeers([...new Set([...this.peers.values()].map((p) => p.ip))]);
+    // Also publish the full snapshot so /api/live can serve the live counters
+    // (peers/blocked/unique_ips/vpn) that the REST /api/status doesn't carry.
+    publishSnapshot(this.snapshot());
   }
 
   /** Best-effort country lookup via a public GeoIP API (no local mmdb here).

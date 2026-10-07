@@ -1,5 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { publishSessionPeers, readSessionPeers, SESSION_PEERS_KEY } from "./sessionPeers";
+import {
+  publishSessionPeers,
+  readSessionPeers,
+  SESSION_PEERS_KEY,
+  publishSnapshot,
+  readSnapshot,
+} from "./sessionPeers";
+import type { PanelStatus } from "./status";
 
 describe("sessionPeers bridge", () => {
   beforeEach(() => publishSessionPeers([]));
@@ -26,5 +33,19 @@ describe("sessionPeers bridge", () => {
     publishSessionPeers(["9.9.9.9"]);
     const g = globalThis as unknown as Record<symbol, { ips: string[] } | undefined>;
     expect(g[SESSION_PEERS_KEY]?.ips).toEqual(["9.9.9.9"]);
+  });
+});
+
+describe("snapshot bridge", () => {
+  const sample = { mode: "solo", unique_ips: 3, blocked: 42 } as unknown as PanelStatus;
+
+  it("starts null", () => {
+    publishSnapshot(null as unknown as PanelStatus);
+    expect(readSnapshot()).toBeNull();
+  });
+
+  it("roundtrips the published snapshot", () => {
+    publishSnapshot(sample);
+    expect(readSnapshot()).toBe(sample);
   });
 });
