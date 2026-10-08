@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
     network_mode: host
     privileged: true
-    # Config, secrets and the Discord webhook come from .env (copy .env.example).
+    # Config and secrets come from .env (copy .env.example).
     # Never commit real values. Edit .env and restart the container to change them.
     env_file:
       - .env

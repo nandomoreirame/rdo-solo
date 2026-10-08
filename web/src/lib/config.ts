@@ -11,8 +11,6 @@ export interface AppConfig {
   bin: string;
   sudo: boolean;
   blockTag: string;
-  /** Discord webhook for session-drop alerts. "" disables Discord. */
-  discordWebhook: string;
   /** Turn solo off automatically when the session drops (so you can reconnect). */
   autoOff: boolean;
   /** Idle time with RSONET that counts as a drop. */
@@ -51,7 +49,6 @@ export function getConfig(): AppConfig {
     bin: process.env.RDO_BIN ?? "rdo-solo-tui",
     sudo: (process.env.RDO_SUDO ?? "1") !== "0",
     blockTag: process.env.RDO_BLOCK_TAG ?? "RDO_BLOCK",
-    discordWebhook: process.env.RDO_DISCORD_WEBHOOK ?? "",
     autoOff: (process.env.RDO_AUTO_OFF ?? "1") !== "0",
     dropSilenceMs: (Number(process.env.RDO_DROP_SILENCE_SECS ?? "45") || 45) * 1000,
     dropConfirmMs: (Number(process.env.RDO_DROP_CONFIRM_SECS ?? "8") || 8) * 1000,

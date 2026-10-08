@@ -2,7 +2,7 @@
 //! solo state + route health, reads the block counter straight from iptables,
 //! tails the console's P2P ports to list the session players / blocked intruders
 //! (enriched with GeoIP), and tails RSONET traffic to detect a session drop. On
-//! a drop it can auto-off solo and alert Discord. Emits "update" whenever the
+//! a drop it can auto-off solo. Emits "update" whenever the
 //! snapshot changes so the WebSocket layer can fan it out.
 
 import { EventEmitter } from "node:events";
@@ -12,7 +12,6 @@ import { getConfig } from "./config";
 import { readStatus, toggleSolo } from "./rdo";
 import { parseStatusJson, type PanelStatus, type PanelPeer, type SoloStatus, type VpnInfo } from "./status";
 import { DropDetector } from "./dropDetector";
-import { notifyDiscord } from "./notify";
 import { publishSessionPeers, publishSnapshot } from "./sessionPeers";
 import { parseVpnProbe, vpnProbeArgs, vpnEqual } from "./vpn";
 
@@ -380,24 +379,15 @@ class SoloMonitor extends EventEmitter {
     }
   }
 
-  /** A confirmed session went silent: alert Discord and, if configured, turn
-   *  solo off so the console can reconnect (the filter would block it otherwise). */
+  /** A confirmed session went silent: if configured, turn solo off so the console
+   *  can reconnect (the filter would block it otherwise). */
   private async handleDrop(): Promise<void> {
     this.droppedAt = Date.now();
     const cfg = getConfig();
-    const wasSolo = this.status.solo;
-    let msg = "🔴 rdo-solo: sua sessão do Red Dead Online caiu (perdeu contato com a Rockstar).";
-    if (wasSolo && cfg.autoOff) {
-      try {
-        await toggleSolo(false);
-        msg += " Modo solo DESLIGADO automaticamente para você reconectar.";
-      } catch {
-        msg += " ATENÇÃO: falhei ao desligar o solo — desligue manualmente para reconectar!";
-      }
-    } else if (wasSolo) {
-      msg += " O modo solo está LIGADO — desligue para conseguir reconectar.";
+    if (this.status.solo && cfg.autoOff) {
+      // Turn solo off so the console can reconnect; a failure just leaves it on.
+      await toggleSolo(false).catch(() => {});
     }
-    void notifyDiscord(cfg.discordWebhook, msg);
     this.status = await readStatus().catch(() => this.status);
     this.emit("update", this.snapshot());
   }

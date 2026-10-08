@@ -7,7 +7,7 @@ interna ou pelo Tailscale. Roda **no gateway** (mesma máquina do `rdo-solo`).
 - **Status ao vivo** por WebSocket: solo on/off, há quanto tempo, bloqueios, IPs
   distintos e a saúde da rota (encaminhamento, redirecionamentos, rota, console).
 - **PIN** de acesso + sessão assinada (cookie httpOnly), com rate-limit.
-- **Detecção de queda de sessão**: autodesligamento do solo + alerta no Discord.
+- **Detecção de queda de sessão**: autodesligamento do solo para reconectar.
 
 ## Arquitetura
 
@@ -115,7 +115,6 @@ Ao detectar a queda:
 
 - **Autodesligamento** (`RDO_AUTO_OFF=1`): desliga o solo sozinho, porque com ele
   ligado o filtro impede a reconexão.
-- **Discord** (`RDO_DISCORD_WEBHOOK`): manda o alerta no webhook do seu canal.
 - **Painel**: mostra um aviso "SESSÃO CAIU".
 
 Ajuste `RDO_DROP_SILENCE_SECS` (silêncio que conta como queda) e
