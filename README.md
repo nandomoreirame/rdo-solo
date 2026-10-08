@@ -58,7 +58,16 @@ documentada em `tui/README.md`.
 
 ## Aviso
 
-Bloquear o tráfego do jogo mexe na sua conexão com os servidores e com outros
-jogadores. Use por sua conta e risco e leia a seção "Termos de uso" em
+Bloquear o tráfego P2P do jogo mexe na sua conexão com os servidores e com
+outros jogadores. **Isso pode violar os Termos de Serviço da Rockstar/Take-Two
+e, em tese, levar a punições na conta (inclusive ban).** Use por sua conta e
+risco, com finalidade pessoal/educacional; leia a seção "Termos de uso" em
 `homelab/rdo-solo.md`. Esta é uma ferramenta pessoal, extraída de um dotfiles
-privado e compartilhada como está.
+privado e compartilhada como está, **sem garantia**.
+
+O painel `web/` protege o acesso por PIN + sessão assinada, mas foi pensado para
+**rede local / Tailscale**, não para exposição direta na internet.
+
+## Licença
+
+[MIT](LICENSE) © Fernando Moreira.
